@@ -1,0 +1,23 @@
+/*
+ * Tailwind layers of the standalone site. The token CSS variables (light/dark themes) are
+ * provided by `@binarii/processii/styles.css` (imported before this file — embedded defaults
+ * of the theming contract, ADR 0006). No hard-coded color here.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  /* Prevents the **horizontal trackpad swipe** from triggering the browser back/forward while
+     navigating the board (pan/zoom). Set on html AND body (some browsers only honor one).
+     Complemented by a non-passive `wheel` listener on the app side (see app.tsx) for the non-scrollable areas. */
+  overscroll-behavior: none;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+}

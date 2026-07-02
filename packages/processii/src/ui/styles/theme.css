@@ -1,0 +1,151 @@
+/* ------------------------------------------------------------------
+   DEFAULT values of the processii theming contract — GENERATED from
+   the TS tokens (src/ui/tokens.ts + themes.ts via themeCssVarsBlock()).
+   Same CSS variable names as ui-kit, on the same selectors
+   (ADR 0006): within memorii, do NOT import this file (ui-kit already
+   provides the values; if both sheets were loaded, the import order
+   would decide); outside memorii, import it OR provide your own
+   variables. No Tailwind directive here: the host app keeps its own
+   Tailwind entry and imports this file for the variables.
+   Do not edit by hand: regenerate when the tokens change.
+   The src/ui/theme-css.test.ts test guarantees the sync.
+   ------------------------------------------------------------------ */
+
+:root {
+  --color-bg: #ffffff;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-sidebar: #f4f4f5;
+  --color-overlay: rgb(9 9 11 / 0.45);
+  --color-ink: #020530;
+  --color-text: #18181b;
+  --color-heading: #020530;
+  --color-muted: #52525b;
+  --color-border: #e4e4e7;
+  --color-input: #d4d4d8;
+  --color-ring: #0166ff;
+  --color-accent: #0166ff;
+  --color-accent-hover: #0152cc;
+  --color-accent-fg: #ffffff;
+  --color-accent-subtle: #e6efff;
+  --color-danger: #dc2626;
+  --color-danger-hover: #b91c1c;
+  --color-danger-fg: #ffffff;
+  --color-danger-subtle: #fef2f2;
+  --color-success: #15803d;
+  --color-success-fg: #ffffff;
+  --color-success-subtle: #f0fdf4;
+  --color-warning: #b45309;
+  --color-warning-fg: #ffffff;
+  --color-warning-subtle: #fffbeb;
+  --spacing-0: 0px;
+  --spacing-1: 0.25rem;
+  --spacing-2: 0.5rem;
+  --spacing-3: 0.75rem;
+  --spacing-4: 1rem;
+  --spacing-5: 1.25rem;
+  --spacing-6: 1.5rem;
+  --spacing-8: 2rem;
+  --spacing-10: 2.5rem;
+  --spacing-11: 2.75rem;
+  --spacing-12: 3rem;
+  --spacing-16: 4rem;
+  --spacing-px: 1px;
+  --spacing-0.5: 0.125rem;
+  --radius-none: 0px;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-full: 9999px;
+  --shadow-none: none;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --z-base: 0;
+  --z-dropdown: 1000;
+  --z-sticky: 1100;
+  --z-overlay: 1200;
+  --z-modal: 1300;
+  --z-popover: 1400;
+  --z-toast: 1500;
+  --z-tooltip: 1600;
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --duration-slow: 320ms;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', 'Menlo', 'Consolas', monospace;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+}
+
+:root[data-theme='light'] {
+  --color-bg: #ffffff;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-sidebar: #f4f4f5;
+  --color-overlay: rgb(9 9 11 / 0.45);
+  --color-ink: #020530;
+  --color-text: #18181b;
+  --color-heading: #020530;
+  --color-muted: #52525b;
+  --color-border: #e4e4e7;
+  --color-input: #d4d4d8;
+  --color-ring: #0166ff;
+  --color-accent: #0166ff;
+  --color-accent-hover: #0152cc;
+  --color-accent-fg: #ffffff;
+  --color-accent-subtle: #e6efff;
+  --color-danger: #dc2626;
+  --color-danger-hover: #b91c1c;
+  --color-danger-fg: #ffffff;
+  --color-danger-subtle: #fef2f2;
+  --color-success: #15803d;
+  --color-success-fg: #ffffff;
+  --color-success-subtle: #f0fdf4;
+  --color-warning: #b45309;
+  --color-warning-fg: #ffffff;
+  --color-warning-subtle: #fffbeb;
+}
+
+:root.dark,
+:root[data-theme='dark'] {
+  --color-bg: #020530;
+  --color-surface: #0a0e3a;
+  --color-surface-raised: #161b4d;
+  --color-sidebar: #0a0e3a;
+  --color-overlay: rgb(0 0 0 / 0.6);
+  --color-ink: #0a0e3a;
+  --color-text: #fafafa;
+  --color-heading: #fafafa;
+  --color-muted: #a1a1aa;
+  --color-border: #232a5e;
+  --color-input: #2f3670;
+  --color-ring: #3384ff;
+  --color-accent: #0166ff;
+  --color-accent-hover: #0152cc;
+  --color-accent-fg: #ffffff;
+  --color-accent-subtle: #012966;
+  --color-danger: #dc2626;
+  --color-danger-hover: #b91c1c;
+  --color-danger-fg: #ffffff;
+  --color-danger-subtle: rgb(127 29 29 / 0.4);
+  --color-success: #22c55e;
+  --color-success-fg: #09090b;
+  --color-success-subtle: rgb(20 83 45 / 0.4);
+  --color-warning: #f59e0b;
+  --color-warning-fg: #09090b;
+  --color-warning-subtle: rgb(120 53 15 / 0.4);
+}

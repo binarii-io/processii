@@ -1,0 +1,1392 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { boxFromPoints, elementsInBox, hitTest, DEFAULT_HIT_TOLERANCE } from './hit-test.js';
+import {
+  handleAtPoint,
+  hasHandles,
+  resizeElement,
+  rotateElement,
+  type HandleKind,
+} from './handles.js';
+import { isColorToken, renderToCanvas, type CanvasLike } from './render.js';
+import {
+  panBy,
+  screenToWorld,
+  worldToScreen,
+  zoomAt,
+  IDENTITY_VIEWPORT,
+  type Point,
+  type Viewport,
+} from './viewport.js';
+import { snapMove } from './snap.js';
+import { connectorElbow } from './connector.js';
+import type { BoundingBox, WhiteboardEngine } from './engine.js';
+import type { WhiteboardElement } from './scene.js';
+import type { CrdtAwareness } from './crdt/index.js';
+import { StylePanel } from './style-panel.js';
+import {
+  observePresence,
+  publishCursor,
+  publishSelection,
+  readRemoteCursors,
+  readRemoteSelections,
+  type RemoteCursor,
+  type RemoteSelection,
+} from './presence.js';
+
+/**
+ * Interactive drawing surface of the process board: mounts a `WhiteboardEngine` on a 2D `<canvas>`,
+ * rendered through a **viewport** (zoom/pan, local state). The canvas **fills its container** (size
+ * measured with `ResizeObserver`) unless `width`/`height` are provided (tests).
+ *
+ * Interactions: selection (click / shift / marquee), move (with snapping), resize+rotate handles,
+ * **mouse-driven swimlane resizing** (bottom edge = height, right edge = shared width),
+ * lane selection (header click), double-click = text/name editing, wheel pan / ⌘-wheel zoom,
+ * space/middle-click pan, keyboard undo/redo, Delete/Escape. The **cursor** reflects the available action.
+ */
+export interface BoardCanvasProps {
+  readonly engine: WhiteboardEngine;
+  /** Fixed size (tests); otherwise the canvas fills its container. */
+  readonly width?: number;
+  readonly height?: number;
+  readonly onChange?: () => void;
+  readonly awareness?: CrdtAwareness;
+  readonly selectedLaneId?: string | null;
+  readonly onSelectLane?: (id: string | null) => void;
+  /** Sub-process: double-click on a linked step → "enter" the `ref` child whiteboard. */
+  readonly onNavigateSubprocess?: (ref: string) => void;
+  /** Initial zoom (and "reset view" zoom). Defaults to `1`. Used e.g. to zoom out an embedded
+   *  demo on a small screen so the whole board fits without changing its proportions. */
+  readonly initialZoom?: number;
+}
+
+/** Snapping threshold, in screen pixels (converted to world units via the zoom). */
+const SNAP_SCREEN_THRESHOLD = 6;
+/** Tolerance (screen px) to grab a swimlane edge. */
+const LANE_EDGE_TOLERANCE = 6;
+
+/** CSS cursor per transform-handle kind. */
+const HANDLE_CURSOR: Record<HandleKind, string> = {
+  nw: 'nwse-resize',
+  se: 'nwse-resize',
+  ne: 'nesw-resize',
+  sw: 'nesw-resize',
+  n: 'ns-resize',
+  s: 'ns-resize',
+  e: 'ew-resize',
+  w: 'ew-resize',
+  rotate: 'grab',
+};
+
+/** Transient state of an in-progress pointer gesture. */
+type Interaction =
+  | { readonly mode: 'idle' }
+  | { readonly mode: 'panning'; lastScreen: Point }
+  | {
+      readonly mode: 'moving';
+      readonly startWorld: Point;
+      readonly startBounds: BoundingBox;
+      readonly otherBounds: readonly BoundingBox[];
+      applied: Point;
+    }
+  | {
+      readonly mode: 'resizing';
+      readonly id: string;
+      readonly handle: Exclude<HandleKind, 'rotate'>;
+    }
+  | { readonly mode: 'rotating'; readonly id: string }
+  | { readonly mode: 'laneResizeH'; readonly laneId: string }
+  | { readonly mode: 'laneResizeW' }
+  | { readonly mode: 'laneReorder'; readonly laneId: string; readonly grabDy: number }
+  | { readonly mode: 'marquee'; readonly startWorld: Point; readonly additive: boolean };
+
+/**
+ * Index (0-based) of the lane whose **vertical band** contains the world ordinate `y`; above
+ * everything → first lane, below → last one. `-1` when there is no lane. Used by the reorder
+ * drag: the dragged lane takes the hovered slot.
+ */
+function laneIndexAtWorldY(lanes: readonly { readonly height: number }[], y: number): number {
+  if (lanes.length === 0) return -1;
+  let top = 0;
+  for (let i = 0; i < lanes.length; i += 1) {
+    top += lanes[i]!.height;
+    if (y < top) return i;
+  }
+  return lanes.length - 1;
+}
+
+function screenPoint(canvas: HTMLCanvasElement, clientX: number, clientY: number): Point {
+  const rect = canvas.getBoundingClientRect();
+  return { x: clientX - rect.left, y: clientY - rect.top };
+}
+
+/** Connection-handle directions (N/E/S/W). */
+type ConnectDir = 'n' | 'e' | 's' | 'w';
+const CONNECT_DIRS: readonly ConnectDir[] = ['n', 'e', 's', 'w'];
+
+/** **World** point at the middle of a box side (anchor of a connector/connection handle). */
+function sideAnchor(b: BoundingBox, dir: ConnectDir): Point {
+  switch (dir) {
+    case 'n':
+      return { x: b.x + b.width / 2, y: b.y };
+    case 's':
+      return { x: b.x + b.width / 2, y: b.y + b.height };
+    case 'w':
+      return { x: b.x, y: b.y + b.height / 2 };
+    case 'e':
+      return { x: b.x + b.width, y: b.y + b.height / 2 };
+  }
+}
+
+/** Opposite side (to anchor the created shape facing the source). */
+function oppositeSide(dir: ConnectDir): ConnectDir {
+  return dir === 'n' ? 's' : dir === 's' ? 'n' : dir === 'e' ? 'w' : 'e';
+}
+
+/** Side of `box` closest to point `p` (to anchor on the drop target). */
+function nearestSide(box: BoundingBox, p: Point): ConnectDir {
+  const d = {
+    w: Math.abs(p.x - box.x),
+    e: Math.abs(p.x - (box.x + box.width)),
+    n: Math.abs(p.y - box.y),
+    s: Math.abs(p.y - (box.y + box.height)),
+  };
+  return (Object.keys(d) as ConnectDir[]).reduce((best, k) => (d[k] < d[best] ? k : best), 'w');
+}
+
+/** Generates an element id (prefix distinct from other id sources, collision-free). */
+let connSeq = 0;
+function genElementId(): string {
+  connSeq += 1;
+  return `el-${Date.now().toString(36)}-q${connSeq}`;
+}
+
+/**
+ * Builds a token → **actual color** resolver reading the active theme (`--color-<token>` via
+ * `getComputedStyle`). Required for the 2D Canvas, which cannot paint `var(--color-…)`.
+ * Rebuilt on every frame → follows the light/dark theme.
+ */
+function makeColorResolver(): (value: string) => string {
+  if (typeof document === 'undefined' || typeof getComputedStyle === 'undefined') {
+    return (value) => value;
+  }
+  const styles = getComputedStyle(document.documentElement);
+  const cache = new Map<string, string>();
+  return (value) => {
+    if (value === 'transparent' || value === 'none') return 'transparent';
+    if (!isColorToken(value)) return value;
+    let resolved = cache.get(value);
+    if (resolved === undefined) {
+      resolved = styles.getPropertyValue(`--color-${value}`).trim() || value;
+      cache.set(value, resolved);
+    }
+    return resolved;
+  };
+}
+
+/** CSS color for the DOM (editing overlay): token → var(--color-…), literal → as-is. */
+function cssColor(value: string): string {
+  if (value === 'transparent' || value === 'none') return 'transparent';
+  return isColorToken(value) ? `var(--color-${value})` : value;
+}
+
+/**
+ * **contentEditable** in-place editor: renders exactly like the card (h+v centering via flex for
+ * a step) → what you type matches what will be displayed. Uncontrolled: initial value set on
+ * mount, read on commit. Enter commits, Shift+Enter inserts a newline, Escape cancels.
+ */
+function InlineEditor({
+  initial,
+  style,
+  decoration,
+  onCommit,
+  onCancel,
+}: {
+  initial: string;
+  style: React.CSSProperties | undefined;
+  /** `text-decoration-line` (underline/strikethrough): set on the editable because it is not inherited by a child block. */
+  decoration: string;
+  onCommit: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.textContent = initial;
+    el.focus();
+    if (typeof window !== 'undefined' && window.getSelection && document.createRange) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    }
+    // Mount-only: we do not resync the DOM on keystrokes (uncontrolled).
+  }, [initial]);
+  // The **container** owns the box (position/background/border/centering); the **editable** is a child
+  // inheriting the typography. A flex-centered contentEditable shows its caret at the top while it is
+  // empty; making it a child of the flex container guarantees one line → caret centered from the start.
+  return (
+    <div className="absolute" style={style}>
+      <div
+        ref={ref}
+        contentEditable
+        suppressContentEditableWarning
+        role="textbox"
+        aria-label="Éditer le texte"
+        className="outline-none"
+        style={{ width: '100%', textDecorationLine: decoration }}
+        onBlur={() => onCommit(ref.current?.textContent ?? '')}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            onCommit(ref.current?.textContent ?? '');
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          }
+          e.stopPropagation();
+        }}
+      />
+    </div>
+  );
+}
+
+export function BoardCanvas({
+  engine,
+  width,
+  height,
+  onChange,
+  awareness,
+  selectedLaneId,
+  onSelectLane,
+  onNavigateSubprocess,
+  initialZoom = 1,
+}: BoardCanvasProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const fixedSize = width !== undefined && height !== undefined;
+  const [measured, setMeasured] = useState({ w: width ?? 800, h: height ?? 600 });
+  const size = fixedSize ? { w: width, h: height } : measured;
+  // Shared board background color (re-read on every render; the parent forces a render via onChange).
+  const background = engine.getBackground();
+  // Canvas rendering scale. We target the screen density (Retina/HiDPI) BUT with a **minimum of 2×**
+  // (supersampling): on a 1× screen, drawing at 2× then letting the browser downscale noticeably
+  // smooths edges (curves, rounded corners, text) — as close as possible to the extension's vector
+  // rendering. Capped at 3× for performance. (Without this, a 1× bitmap looks jagged on rounded shapes.)
+  const dpr =
+    typeof window !== 'undefined' ? Math.min(Math.max(window.devicePixelRatio || 1, 2), 3) : 2;
+
+  const [viewport, setViewportState] = useState<Viewport>(IDENTITY_VIEWPORT);
+  const vpRef = useRef<Viewport>(viewport);
+  const interaction = useRef<Interaction>({ mode: 'idle' });
+  const marquee = useRef<BoundingBox | undefined>(undefined);
+  // Ids intersected by the in-progress marquee (selection preview before release).
+  const marqueeHits = useRef<string[]>([]);
+  const guides = useRef<{ x?: number; y?: number } | undefined>(undefined);
+  // Preview of the **lane reorder drag**: ghost (translucent lane following the cursor) +
+  // drop line (where the lane will land). `targetIndex`/`fromIndex` are used by the commit on release.
+  const laneDrag = useRef<
+    | {
+        ghostTop: number;
+        height: number;
+        dropY: number;
+        targetIndex: number;
+        fromIndex: number;
+      }
+    | undefined
+  >(undefined);
+  const spaceHeld = useRef(false);
+  const [percent, setPercent] = useState(100);
+  const [editing, setEditing] = useState<{
+    id: string;
+    field: 'text' | 'name';
+    value: string;
+  } | null>(null);
+  const [remoteCursors, setRemoteCursors] = useState<RemoteCursor[]>([]);
+  // Remote selections (collab): drawn on the canvas → kept in a ref (no React re-render).
+  const remoteSelectionsRef = useRef<RemoteSelection[]>([]);
+  // Last published local selection (key) → avoids rewriting the awareness on every draw.
+  const lastSelKeyRef = useRef<string | null>(null);
+  // Measured width of the contextual style bar → to keep it inside the frame (horizontal clamp).
+  const [styleBarW, setStyleBarW] = useState(0);
+  const styleBarRef = useRef<HTMLDivElement | null>(null);
+  // Hovered element (box) → shows the N/E/S/W connection handles.
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  // Connector drag from a handle: start (click) in a ref, live line (screen) in state.
+  const connectRef = useRef<{
+    fromId: string;
+    dir: ConnectDir;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const [connectLine, setConnectLine] = useState<{
+    ax: number;
+    ay: number;
+    tx: number;
+    ty: number;
+  } | null>(null);
+  // Target hovered during a connector drag → shows its anchor points (drop zones).
+  const [dragTargetId, setDragTargetId] = useState<string | null>(null);
+  // Active side (closest to the cursor) on the target → only that anchor point is highlighted.
+  const [dragSide, setDragSide] = useState<ConnectDir | null>(null);
+  // World origin (0,0) centered on screen: wait for the first real measure, then center once.
+  const hasMeasuredRef = useRef(false);
+  const centeredRef = useRef(false);
+
+  const setViewport = useCallback((next: Viewport): void => {
+    vpRef.current = next;
+    setViewportState(next);
+    setPercent(Math.round(next.zoom * 100));
+  }, []);
+
+  // Resets the view: 100% zoom and **world origin (0,0) at the middle** of the canvas.
+  const resetView = useCallback((): void => {
+    setViewport({ x: size.w / 2, y: size.h / 2, zoom: initialZoom });
+  }, [setViewport, size.w, size.h, initialZoom]);
+
+  // Responsive size: measures the container (unless a fixed size is imposed by the tests).
+  useEffect(() => {
+    if (fixedSize) return;
+    const wrapper = wrapperRef.current;
+    if (!wrapper || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (rect && rect.width > 0 && rect.height > 0) {
+        hasMeasuredRef.current = true;
+        setMeasured({ w: Math.round(rect.width), h: Math.round(rect.height) });
+      }
+    });
+    observer.observe(wrapper);
+    return () => observer.disconnect();
+  }, [fixedSize]);
+
+  // Centers the world origin (0,0) at the middle of the canvas, **once**, on the first real measure.
+  useEffect(() => {
+    if (fixedSize || centeredRef.current || !hasMeasuredRef.current) return;
+    if (size.w > 0 && size.h > 0) {
+      centeredRef.current = true;
+      resetView();
+    }
+  }, [fixedSize, size.w, size.h, resetView]);
+
+  const draw = useCallback((): void => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!ctx) return;
+    // Base = HiDPI scale; all rendering then happens in **CSS** coordinates (crisp on Retina).
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const surface = ctx as unknown as CanvasLike;
+    renderToCanvas(surface, engine.toRenderModel(), {
+      clear: { width: size.w, height: size.h },
+      viewport: vpRef.current,
+      resolveColor: makeColorResolver(),
+      // Semi-transparent gray: visible on light AND dark backgrounds (passes through the resolver as-is).
+      dotGrid: { color: 'rgba(130, 130, 140, 0.45)' },
+      ...(marquee.current ? { marquee: marquee.current } : {}),
+      ...(marqueeHits.current.length ? { marqueeHighlightIds: marqueeHits.current } : {}),
+      ...(guides.current ? { guides: guides.current } : {}),
+      ...(selectedLaneId ? { selectedLaneId } : {}),
+      ...(remoteSelectionsRef.current.length
+        ? {
+            remoteSelections: remoteSelectionsRef.current.map((s) => ({
+              ids: s.ids,
+              color: s.color,
+            })),
+          }
+        : {}),
+      // During in-place editing, the DOM overlay replaces the card → hide selection/handles and
+      // the edited element itself (otherwise its canvas border shows under the overlay).
+      ...(editing ? { suppressSelection: true, hiddenElementId: editing.id } : {}),
+    });
+    // **Lane reorder drag** overlay: drawn ON TOP of the board, in screen coordinates (we re-assert
+    // the HiDPI transform because the renderer may have changed it). Ghost = translucent footprint
+    // of the dragged lane following the cursor; drop line = boundary where it will land.
+    const ld = laneDrag.current;
+    if (ld) {
+      const vp = vpRef.current;
+      const accent = makeColorResolver()('accent');
+      const laneW = engine.getSwimlanesWidth();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.save();
+      // Drop line (full lane width).
+      const dl = worldToScreen(vp, { x: 0, y: ld.dropY });
+      const dr = worldToScreen(vp, { x: laneW, y: ld.dropY });
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(dl.x, dl.y);
+      ctx.lineTo(dr.x, dr.y);
+      ctx.stroke();
+      // Ghost: translucent footprint of the lane, following the cursor (dashed accent border).
+      const g0 = worldToScreen(vp, { x: 0, y: ld.ghostTop });
+      const g1 = worldToScreen(vp, { x: laneW, y: ld.ghostTop + ld.height });
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = accent;
+      ctx.fillRect(g0.x, g0.y, g1.x - g0.x, g1.y - g0.y);
+      ctx.globalAlpha = 1;
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = accent;
+      ctx.strokeRect(g0.x, g0.y, g1.x - g0.x, g1.y - g0.y);
+      ctx.restore();
+    }
+    // Publishes the **local selection** to peers when it changes (others see it highlighted).
+    if (awareness) {
+      const sel = engine.getSelection();
+      const key = sel.join(',');
+      if (key !== lastSelKeyRef.current) {
+        lastSelKeyRef.current = key;
+        publishSelection(awareness, sel);
+      }
+    }
+  }, [engine, size.w, size.h, selectedLaneId, editing, awareness, dpr]);
+
+  useEffect(() => {
+    draw();
+    const unobserve = engine.observe(draw);
+    return () => unobserve();
+  }, [engine, draw, viewport]);
+
+  // Wheel zoom/pan: native non-passive listener so preventDefault() is allowed.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (event: WheelEvent): void => {
+      event.preventDefault();
+      const pivot = screenPoint(canvas, event.clientX, event.clientY);
+      if (event.ctrlKey || event.metaKey) {
+        setViewport(zoomAt(vpRef.current, Math.exp(-event.deltaY * 0.002), pivot));
+      } else {
+        setViewport(panBy(vpRef.current, -event.deltaX, -event.deltaY));
+      }
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, [setViewport]);
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent): void => {
+      if (e.code === 'Space') spaceHeld.current = true;
+    };
+    const up = (e: KeyboardEvent): void => {
+      if (e.code === 'Space') spaceHeld.current = false;
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!awareness) return;
+    // New awareness (mount / reconnection) → republish the local selection on the next draw.
+    lastSelKeyRef.current = null;
+    const refresh = (): void => {
+      setRemoteCursors(readRemoteCursors(awareness));
+      // Remote selections: in a ref + canvas redraw (the highlight is painted, not DOM).
+      remoteSelectionsRef.current = readRemoteSelections(awareness);
+      draw();
+    };
+    refresh();
+    return observePresence(awareness, refresh);
+  }, [awareness, draw]);
+
+  // Redraws when the theme changes (colors resolved via getComputedStyle change).
+  useEffect(() => {
+    if (typeof MutationObserver === 'undefined') return;
+    const observer = new MutationObserver(() => draw());
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'data-theme'],
+    });
+    return () => observer.disconnect();
+  }, [draw]);
+
+  /**
+   * Snapping/alignment targets: the **non**-selected elements **plus** the **swimlanes**
+   * (edges + centers). Additive → the existing block-to-block snapping is unchanged.
+   */
+  const snapTargets = (): BoundingBox[] => {
+    const selected = new Set(engine.getSelection());
+    const elements = engine
+      .listElements()
+      .filter((el) => !selected.has(el.id))
+      .map((el) => engine.boundingBox(el.id))
+      .filter((b): b is BoundingBox => b !== undefined);
+    return [...elements, ...engine.swimlaneBounds()];
+  };
+
+  /** Cursor to display on hover (action available under the pointer). */
+  const cursorFor = (world: Point, zoom: number): string => {
+    if (spaceHeld.current) return 'grab';
+    const sel = engine.getSelection();
+    if (sel.length === 1) {
+      const el = engine.board.getElement(sel[0]!);
+      if (el && hasHandles(el)) {
+        const handle = handleAtPoint(el, world, zoom);
+        if (handle) return HANDLE_CURSOR[handle];
+      }
+    }
+    const edge = engine.laneEdgeAtPoint(world, LANE_EDGE_TOLERANCE / zoom);
+    if (edge) return edge.edge === 'right' ? 'ew-resize' : 'ns-resize';
+    // Lane header → draggable (drag to reorder the lanes).
+    if (engine.laneHeaderAtPoint(world)) return 'grab';
+    if (hitTest(engine.listElements(), world, DEFAULT_HIT_TOLERANCE / zoom)) return 'move';
+    return 'default';
+  };
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.setPointerCapture?.(event.pointerId);
+    setHoveredId(null); // hides the connection handles during a gesture
+    const screen = screenPoint(canvas, event.clientX, event.clientY);
+
+    if (event.button === 1 || spaceHeld.current) {
+      interaction.current = { mode: 'panning', lastScreen: screen };
+      return;
+    }
+    if (event.button !== 0) return;
+
+    const world = screenToWorld(vpRef.current, screen);
+    const zoom = vpRef.current.zoom;
+
+    // 1) Transform handles on a single box-shaped selection.
+    const selection = engine.getSelection();
+    if (selection.length === 1) {
+      const id = selection[0]!;
+      const el = engine.board.getElement(id);
+      if (el && hasHandles(el)) {
+        const handle = handleAtPoint(el, world, zoom);
+        if (handle === 'rotate') {
+          interaction.current = { mode: 'rotating', id };
+          return;
+        }
+        if (handle) {
+          interaction.current = { mode: 'resizing', id, handle };
+          return;
+        }
+      }
+    }
+
+    // 2) Swimlane edge → mouse-driven resizing (before element selection).
+    const edge = engine.laneEdgeAtPoint(world, LANE_EDGE_TOLERANCE / zoom);
+    if (edge) {
+      interaction.current =
+        edge.edge === 'right'
+          ? { mode: 'laneResizeW' }
+          : { mode: 'laneResizeH', laneId: edge.laneId! };
+      return;
+    }
+
+    // 3) Selection / move / marquee.
+    const tolerance = DEFAULT_HIT_TOLERANCE / zoom;
+    const hit = hitTest(engine.listElements(), world, tolerance);
+    if (hit) {
+      onSelectLane?.(null);
+      if (event.shiftKey) {
+        engine.toggleSelection(hit.id);
+        interaction.current = { mode: 'idle' };
+      } else {
+        if (!engine.getSelection().includes(hit.id)) engine.select([hit.id]);
+        const startBounds = engine.selectionBounds();
+        interaction.current = startBounds
+          ? {
+              mode: 'moving',
+              startWorld: world,
+              startBounds,
+              otherBounds: snapTargets(),
+              applied: { x: 0, y: 0 },
+            }
+          : { mode: 'idle' };
+      }
+    } else {
+      const laneId = engine.laneHeaderAtPoint(world);
+      if (laneId) {
+        engine.clearSelection();
+        onSelectLane?.(laneId);
+        // Selects the lane AND arms the **reorder drag**: a plain click (no movement) only
+        // selects; dragging shows a ghost + a drop line, and reorders on release.
+        // `grabDy` = cursor↔lane-top offset, so the ghost follows naturally.
+        interaction.current = {
+          mode: 'laneReorder',
+          laneId,
+          grabDy: world.y - engine.laneTop(laneId),
+        };
+      } else {
+        onSelectLane?.(null);
+        if (!event.shiftKey) engine.clearSelection();
+        interaction.current = { mode: 'marquee', startWorld: world, additive: event.shiftKey };
+      }
+    }
+    marquee.current = undefined;
+    guides.current = undefined;
+    laneDrag.current = undefined;
+    onChange?.();
+    draw();
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const screen = screenPoint(canvas, event.clientX, event.clientY);
+    if (awareness) publishCursor(awareness, screenToWorld(vpRef.current, screen));
+    const state = interaction.current;
+    const world = screenToWorld(vpRef.current, screen);
+
+    if (state.mode === 'idle') {
+      canvas.style.cursor = cursorFor(world, vpRef.current.zoom);
+      // Hover → connection handles on the box element under the pointer.
+      const hit = hitTest(engine.listElements(), world, DEFAULT_HIT_TOLERANCE / vpRef.current.zoom);
+      const id = hit && hasHandles(hit) ? hit.id : null;
+      if (id !== hoveredId) setHoveredId(id);
+      return;
+    }
+
+    if (state.mode === 'panning') {
+      setViewport(
+        panBy(vpRef.current, screen.x - state.lastScreen.x, screen.y - state.lastScreen.y),
+      );
+      interaction.current = { mode: 'panning', lastScreen: screen };
+      return;
+    }
+
+    if (state.mode === 'resizing') {
+      const el = engine.board.getElement(state.id);
+      if (el) {
+        engine.updateElement(state.id, resizeElement(el, state.handle, world));
+        engine.refreshConnectors();
+      }
+      return;
+    }
+
+    if (state.mode === 'rotating') {
+      const el = engine.board.getElement(state.id);
+      if (el) {
+        engine.updateElement(state.id, {
+          angle: rotateElement(el, world, event.shiftKey ? Math.PI / 12 : 0),
+        });
+        engine.refreshConnectors();
+      }
+      return;
+    }
+
+    if (state.mode === 'laneResizeH') {
+      const newHeight = Math.max(60, world.y - engine.laneTop(state.laneId));
+      engine.updateSwimlane(state.laneId, { height: newHeight });
+      engine.refreshConnectors();
+      return;
+    }
+
+    if (state.mode === 'laneResizeW') {
+      engine.setSwimlanesWidth(Math.max(200, world.x));
+      return;
+    }
+
+    if (state.mode === 'laneReorder') {
+      canvas.style.cursor = 'grabbing';
+      const lanes = engine.listSwimlanes();
+      const fromIndex = lanes.findIndex((l) => l.id === state.laneId);
+      if (fromIndex !== -1 && lanes.length > 0) {
+        const dragged = lanes[fromIndex]!;
+        // Hovered lane + top/bottom half → **insertion boundary** (0..N). `dropY` = top of that
+        // boundary (sum of the heights above). `targetIndex` = FINAL index passed to
+        // reorderSwimlane (adjusted for the removal of the dragged lane). We do NOT mutate the
+        // board here: preview only; the actual move is committed on release.
+        const overIndex = laneIndexAtWorldY(lanes, world.y);
+        let overTop = 0;
+        for (let i = 0; i < overIndex; i += 1) overTop += lanes[i]!.height;
+        const dropAbove = world.y < overTop + lanes[overIndex]!.height / 2;
+        const boundary = dropAbove ? overIndex : overIndex + 1;
+        let dropY = 0;
+        for (let i = 0; i < boundary; i += 1) dropY += lanes[i]!.height;
+        laneDrag.current = {
+          ghostTop: world.y - state.grabDy,
+          height: dragged.height,
+          dropY,
+          targetIndex: boundary <= fromIndex ? boundary : boundary - 1,
+          fromIndex,
+        };
+      }
+      draw();
+      return;
+    }
+
+    if (state.mode === 'moving') {
+      const raw = { x: world.x - state.startWorld.x, y: world.y - state.startWorld.y };
+      const proposed: BoundingBox = {
+        x: state.startBounds.x + raw.x,
+        y: state.startBounds.y + raw.y,
+        width: state.startBounds.width,
+        height: state.startBounds.height,
+      };
+      const snap = snapMove(
+        proposed,
+        state.otherBounds,
+        SNAP_SCREEN_THRESHOLD / vpRef.current.zoom,
+      );
+      const target = { x: raw.x + snap.dx, y: raw.y + snap.dy };
+      engine.moveSelection(target.x - state.applied.x, target.y - state.applied.y);
+      engine.refreshConnectors();
+      state.applied = target;
+      guides.current =
+        snap.guideX !== undefined || snap.guideY !== undefined
+          ? {
+              ...(snap.guideX !== undefined ? { x: snap.guideX } : {}),
+              ...(snap.guideY !== undefined ? { y: snap.guideY } : {}),
+            }
+          : undefined;
+      draw();
+      return;
+    }
+
+    if (state.mode === 'marquee') {
+      marquee.current = boxFromPoints(state.startWorld, world);
+      // Preview: highlight of the elements already intersected by the box, updated on every frame.
+      marqueeHits.current = elementsInBox(engine.listElements(), marquee.current);
+      draw();
+    }
+  };
+
+  const handlePointerUp = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    const canvas = canvasRef.current;
+    const state = interaction.current;
+    if (canvas?.hasPointerCapture?.(event.pointerId))
+      canvas.releasePointerCapture?.(event.pointerId);
+
+    if (state.mode === 'marquee' && marquee.current) {
+      const inside = elementsInBox(engine.listElements(), marquee.current);
+      engine.select(
+        state.additive ? Array.from(new Set([...engine.getSelection(), ...inside])) : inside,
+      );
+    }
+    // Lane reordering: the move is **committed** on release (no-op if the index is unchanged).
+    if (state.mode === 'laneReorder' && laneDrag.current) {
+      engine.reorderSwimlane(state.laneId, laneDrag.current.targetIndex);
+    }
+    marquee.current = undefined;
+    marqueeHits.current = [];
+    guides.current = undefined;
+    laneDrag.current = undefined;
+    interaction.current = { mode: 'idle' };
+    onChange?.();
+    draw();
+  };
+
+  // Clones the source shape (same type/style/content) at (x,y); returns the new id.
+  const cloneShapeAt = (src: WhiteboardElement, x: number, y: number): string => {
+    const id = genElementId();
+    const clone: WhiteboardElement = { ...src, id, x, y };
+    // An item **created/connected** from a step starts **blank**: the sub-process link belongs to
+    // the source step (otherwise two steps would point to the same child document). Not copied.
+    if (clone.kind === 'step') delete clone.subprocessRef;
+    engine.addElement(clone);
+    return id;
+  };
+
+  // Creates the same shape **in the given direction**, aligned and spaced from the source.
+  const createInDirection = (src: WhiteboardElement, dir: ConnectDir): string => {
+    const GAP = 48;
+    let { x, y } = src;
+    if (dir === 'e') x = src.x + src.width + GAP;
+    else if (dir === 'w') x = src.x - src.width - GAP;
+    else if (dir === 's') y = src.y + src.height + GAP;
+    else y = src.y - src.height - GAP;
+    return cloneShapeAt(src, x, y);
+  };
+
+  /**
+   * Starts from a connection handle: a **click** creates the same shape in the direction and links
+   * it; a **drag** draws a connector up to the dropped shape (or creates a shape at the drop point
+   * if it is empty space), linked to the source. Tracked via window listeners (drag outside the dot).
+   */
+  const startConnect =
+    (fromId: string, dir: ConnectDir) =>
+    (event: React.PointerEvent<HTMLButtonElement>): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      const canvas = canvasRef.current;
+      const box = engine.boundingBox(fromId);
+      if (!canvas || !box) return;
+      const anchor = worldToScreen(vpRef.current, sideAnchor(box, dir));
+      connectRef.current = { fromId, dir, startX: event.clientX, startY: event.clientY };
+      setConnectLine({ ax: anchor.x, ay: anchor.y, tx: anchor.x, ty: anchor.y });
+
+      const onMove = (e: PointerEvent): void => {
+        const c = canvasRef.current;
+        if (!c) return;
+        const sp = screenPoint(c, e.clientX, e.clientY);
+        setConnectLine((prev) => (prev ? { ...prev, tx: sp.x, ty: sp.y } : prev));
+        // Shape under the pointer (≠ source) → show its anchor points, and highlight the side
+        // closest to the cursor (the one the link will attach to).
+        const world = screenToWorld(vpRef.current, sp);
+        const hit = hitTest(
+          engine.listElements(),
+          world,
+          DEFAULT_HIT_TOLERANCE / vpRef.current.zoom,
+        );
+        const target = hit && hit.id !== fromId && hasHandles(hit) ? hit : null;
+        const tid = target?.id ?? null;
+        setDragTargetId((prev) => (prev !== tid ? tid : prev));
+        const tb = target ? engine.boundingBox(target.id) : undefined;
+        const side = tb ? nearestSide(tb, world) : null;
+        setDragSide((prev) => (prev !== side ? side : prev));
+      };
+      const onUp = (e: PointerEvent): void => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        const ref = connectRef.current;
+        connectRef.current = null;
+        setConnectLine(null);
+        setDragTargetId(null);
+        setDragSide(null);
+        const c = canvasRef.current;
+        if (!ref || !c) return;
+        const src = engine.board.getElement(ref.fromId);
+        if (!src) return;
+        const moved = Math.hypot(e.clientX - ref.startX, e.clientY - ref.startY) > 6;
+        const world = screenToWorld(vpRef.current, screenPoint(c, e.clientX, e.clientY));
+        let targetId: string;
+        let endSide: ConnectDir = oppositeSide(ref.dir);
+        if (moved) {
+          const hit = hitTest(
+            engine.listElements(),
+            world,
+            DEFAULT_HIT_TOLERANCE / vpRef.current.zoom,
+          );
+          if (hit && hit.id !== ref.fromId && hasHandles(hit)) {
+            targetId = hit.id;
+            // Anchor side = the one closest to the cursor (= the highlighted dot). Allows a loop.
+            const tb = engine.boundingBox(hit.id);
+            if (tb) endSide = nearestSide(tb, world);
+          } else {
+            targetId = cloneShapeAt(src, world.x - src.width / 2, world.y - src.height / 2);
+          }
+        } else {
+          targetId = createInDirection(src, ref.dir);
+        }
+        // Connector created by drag: default arrow on the **destination tip**.
+        engine.connect(genElementId(), ref.fromId, targetId, {
+          startSide: ref.dir,
+          endSide,
+          endArrow: true,
+        });
+        engine.select([targetId]);
+        setHoveredId(null);
+        onChange?.();
+        draw();
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    };
+
+  const handleDoubleClick = (event: React.MouseEvent<HTMLCanvasElement>): void => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const world = screenToWorld(vpRef.current, screenPoint(canvas, event.clientX, event.clientY));
+    const hit = hitTest(engine.listElements(), world, DEFAULT_HIT_TOLERANCE / vpRef.current.zoom);
+    if (hit?.kind === 'text') setEditing({ id: hit.id, field: 'text', value: hit.text });
+    else if (hit?.kind === 'rectangle' || hit?.kind === 'ellipse') {
+      // Basic shape: double-click → write a centered label "inside" the shape (like a step).
+      setEditing({ id: hit.id, field: 'text', value: hit.text ?? '' });
+    } else if (hit?.kind === 'step') {
+      // Step linked to a sub-process → "enter" the child whiteboard (no inline editing).
+      if (hit.subprocessRef && onNavigateSubprocess) {
+        onNavigateSubprocess(hit.subprocessRef);
+        return;
+      }
+      setEditing({ id: hit.id, field: 'name', value: hit.name });
+    }
+  };
+
+  const commitEditing = (text: string): void => {
+    if (editing) {
+      engine.updateElement(editing.id, { [editing.field]: text });
+      engine.refreshConnectors();
+      setEditing(null);
+      onChange?.();
+    }
+  };
+
+  /**
+   * Screen style of the in-place editor, **overlaid exactly on the element** to give the feeling
+   * of editing "inside the card". For a step: same box, card background, centered text (hides the
+   * title underneath). For a text: top-aligned, transparent/sticky background.
+   */
+  const editorStyle = (): { style: React.CSSProperties; decoration: string } | undefined => {
+    if (!editing) return undefined;
+    const el = engine.board.getElement(editing.id);
+    if (
+      !el ||
+      (el.kind !== 'text' && el.kind !== 'step' && el.kind !== 'rectangle' && el.kind !== 'ellipse')
+    )
+      return undefined;
+    const origin = worldToScreen(vpRef.current, { x: el.x, y: el.y });
+    const zoom = vpRef.current.zoom;
+    // Per-element text formatting (#82) → editor CSS, faithful to the canvas rendering (WYSIWYG).
+    const fontStyle = el.italic ? 'italic' : 'normal';
+    const decoration =
+      [el.underline ? 'underline' : '', el.strike ? 'line-through' : '']
+        .filter(Boolean)
+        .join(' ') || 'none';
+    if (el.kind === 'rectangle' || el.kind === 'ellipse') {
+      // WYSIWYG: we redraw the shape (background/border) under the centered text (h+v), since the
+      // actual element is hidden while editing. Ellipse → 50% border radius to match the oval.
+      const noBorder = el.stroke === 'transparent';
+      const hasFill = el.fill !== 'transparent';
+      return {
+        decoration,
+        style: {
+          position: 'absolute',
+          left: origin.x,
+          top: origin.y,
+          width: el.width * zoom,
+          height: el.height * zoom,
+          boxSizing: 'border-box',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          textAlign: el.textAlign ?? 'center',
+          whiteSpace: 'pre-wrap',
+          overflow: 'hidden',
+          fontSize: (el.fontSize ?? 13) * zoom,
+          fontWeight: el.bold ? 700 : 400,
+          fontStyle,
+          lineHeight: 1.25,
+          padding: 8 * zoom,
+          background: hasFill ? cssColor(el.fill) : 'transparent',
+          color: cssColor(noBorder ? 'text' : el.stroke),
+          border: noBorder ? 'none' : `${el.strokeWidth * zoom}px solid ${cssColor(el.stroke)}`,
+          borderRadius: el.kind === 'ellipse' ? '50%' : 0,
+          boxShadow:
+            hasFill && el.shadow !== false
+              ? `0 ${4 * zoom}px ${16 * zoom}px rgba(0, 0, 0, 0.12)`
+              : 'none',
+        },
+      };
+    }
+    if (el.kind === 'step') {
+      // Strict WYSIWYG: same colors as the card (fill/stroke/width), centered text (h+v).
+      const noBorder = el.stroke === 'transparent';
+      return {
+        decoration,
+        style: {
+          position: 'absolute',
+          left: origin.x,
+          top: origin.y,
+          width: el.width * zoom,
+          height: el.height * zoom,
+          boxSizing: 'border-box',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          textAlign: el.textAlign ?? 'center',
+          whiteSpace: 'pre-wrap',
+          overflow: 'hidden',
+          fontSize: (el.fontSize ?? 13) * zoom,
+          fontWeight: el.bold ? 700 : 600, // step: semi-bold title by default
+          fontStyle,
+          lineHeight: 1.25,
+          padding: 10 * zoom,
+          background: cssColor(el.fill === 'transparent' ? 'surface' : el.fill),
+          color: cssColor(noBorder ? 'text' : el.stroke),
+          border: noBorder ? 'none' : `${el.strokeWidth * zoom}px solid ${cssColor(el.stroke)}`,
+          borderRadius: 10 * zoom, // rounded corners, like the rendered card
+          // **Default** step shadow (WYSIWYG with the rendered card); `false` disables it.
+          boxShadow:
+            el.shadow !== false ? `0 ${4 * zoom}px ${16 * zoom}px rgba(0, 0, 0, 0.12)` : 'none',
+        },
+      };
+    }
+    // Text / sticky: top-aligned (no vertical centering) — same colors as the rendering.
+    const hasBg = el.fill !== 'transparent';
+    return {
+      decoration,
+      style: {
+        position: 'absolute',
+        left: origin.x,
+        top: origin.y,
+        width: Math.max(el.width * zoom, 40),
+        height: Math.max(el.height * zoom, el.fontSize * zoom + 8),
+        boxSizing: 'border-box',
+        textAlign: el.textAlign ?? 'left',
+        whiteSpace: 'pre-wrap',
+        overflow: 'hidden',
+        fontSize: el.fontSize * zoom,
+        fontWeight: el.bold ? 700 : 400,
+        fontStyle,
+        lineHeight: 1,
+        padding: hasBg ? 6 * zoom : 0,
+        background: hasBg ? cssColor(el.fill) : 'transparent',
+        color: cssColor(el.stroke),
+        boxShadow:
+          hasBg && el.shadow !== false
+            ? `0 ${4 * zoom}px ${16 * zoom}px rgba(0, 0, 0, 0.12)`
+            : 'none',
+      },
+    };
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLCanvasElement>): void => {
+    if ((event.metaKey || event.ctrlKey) && (event.key === 'z' || event.key === 'y')) {
+      event.preventDefault();
+      const history = engine.history();
+      if (event.key === 'y' || event.shiftKey) history.redo();
+      else history.undo();
+      onChange?.();
+      draw();
+      return;
+    }
+    if ((event.key === 'Enter' || event.key === 'F2') && !editing) {
+      // Direct editing of the selected element (step → name, text → content).
+      const sel = engine.getSelection();
+      if (sel.length === 1) {
+        const el = engine.board.getElement(sel[0]!);
+        if (el?.kind === 'step') {
+          event.preventDefault();
+          setEditing({ id: el.id, field: 'name', value: el.name });
+          return;
+        }
+        if (el?.kind === 'text' || el?.kind === 'rectangle' || el?.kind === 'ellipse') {
+          event.preventDefault();
+          setEditing({ id: el.id, field: 'text', value: el.text ?? '' });
+          return;
+        }
+      }
+    }
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      if (engine.getSelection().length > 0) {
+        event.preventDefault();
+        engine.removeSelected();
+        onChange?.();
+        draw();
+      }
+    } else if (event.key === 'Escape') {
+      engine.clearSelection();
+      onChange?.();
+      draw();
+    }
+  };
+
+  const zoomPivot = { x: size.w / 2, y: size.h / 2 };
+
+  // Connection handles (N/E/S/W) around the hovered element (screen coords, follows pan/zoom).
+  const connectHandles = ((): { dir: ConnectDir; fromId: string; x: number; y: number }[] => {
+    if (!hoveredId || editing || connectLine) return [];
+    const box = engine.boundingBox(hoveredId);
+    if (!box) return [];
+    // Dots **on the edge** of the item (not outside): otherwise, moving towards them, the cursor
+    // crosses empty space → the hover is lost → they disappear before being reached.
+    return CONNECT_DIRS.map((dir) => {
+      const s = worldToScreen(viewport, sideAnchor(box, dir));
+      return { dir, fromId: hoveredId, x: s.x, y: s.y };
+    });
+  })();
+
+  // Anchor points of the **target** during a connector drag (explicit drop zones).
+  const dropHandles = ((): { dir: ConnectDir; x: number; y: number }[] => {
+    if (!connectLine || !dragTargetId) return [];
+    const box = engine.boundingBox(dragTargetId);
+    if (!box) return [];
+    return CONNECT_DIRS.map((dir) => {
+      const s = worldToScreen(viewport, sideAnchor(box, dir));
+      return { dir, x: s.x, y: s.y };
+    });
+  })();
+
+  // **Elbow** handle of a selected connector (single, bound): at the middle of the crossing
+  // segment. Dragging it moves the segment (`y` axis → up/down, `x` → left/right);
+  // double-click or center snap → recentered (auto). See `connectorElbow` / `setConnectorMidpoint`.
+  const elbowHandle = ((): { id: string; x: number; y: number; axis: 'x' | 'y' } | null => {
+    if (editing || connectLine) return null;
+    const sel = engine.getSelection();
+    if (sel.length !== 1) return null;
+    const el = engine.board.getElement(sel[0]!);
+    if (!el || (el.kind !== 'line' && el.kind !== 'arrow') || !el.start || !el.end) return null;
+    const a = engine.boundingBox(el.start);
+    const b = engine.boundingBox(el.end);
+    if (!a || !b) return null;
+    const elbow = connectorElbow(a, b, {
+      ...(el.startSide ? { startSide: el.startSide } : {}),
+      ...(el.endSide ? { endSide: el.endSide } : {}),
+      ...(el.midpoint !== undefined ? { midpoint: el.midpoint } : {}),
+    });
+    const s = worldToScreen(viewport, elbow.handle);
+    return { id: el.id, x: s.x, y: s.y, axis: elbow.axis };
+  })();
+
+  const startElbowDrag =
+    (id: string, axis: 'x' | 'y') =>
+    (event: React.PointerEvent<HTMLButtonElement>): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const onMove = (e: PointerEvent): void => {
+        const el = engine.board.getElement(id);
+        if (!el || (el.kind !== 'line' && el.kind !== 'arrow') || !el.start || !el.end) return;
+        const a = engine.boundingBox(el.start);
+        const b = engine.boundingBox(el.end);
+        if (!a || !b) return;
+        const def = connectorElbow(a, b, {
+          ...(el.startSide ? { startSide: el.startSide } : {}),
+          ...(el.endSide ? { endSide: el.endSide } : {}),
+        }).default;
+        const world = screenToWorld(vpRef.current, screenPoint(canvas, e.clientX, e.clientY));
+        const coord = axis === 'y' ? world.y : world.x;
+        // Center snap (~6px screen) → recenter (midpoint cleared), otherwise manual position.
+        engine.setConnectorMidpoint(
+          id,
+          Math.abs(coord - def) <= 6 / vpRef.current.zoom ? null : coord,
+        );
+        onChange?.();
+        draw();
+      };
+      const onUp = (): void => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    };
+
+  // Contextual style bar (fill/stroke/width): anchored **above** the top-center of the selection
+  // (flips below when too close to the top edge). Hidden during in-place editing.
+  const styleAnchor = ((): { x: number; topY: number; botY: number } | null => {
+    if (editing) return null;
+    const selected = engine.toRenderModel().elements.filter((e) => e.selected);
+    if (selected.length === 0) return null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const it of selected) {
+      minX = Math.min(minX, it.bounds.x);
+      minY = Math.min(minY, it.bounds.y);
+      maxX = Math.max(maxX, it.bounds.x + it.bounds.width);
+      maxY = Math.max(maxY, it.bounds.y + it.bounds.height);
+    }
+    const center = (minX + maxX) / 2;
+    const top = worldToScreen(viewport, { x: center, y: minY });
+    const bottom = worldToScreen(viewport, { x: center, y: maxY });
+    return { x: top.x, topY: top.y, botY: bottom.y };
+  })();
+  // Above when there is enough room (the ~26px selection frame + the bar), otherwise below.
+  const styleAbove = !styleAnchor || styleAnchor.topY > 84;
+  const styleShown = styleAnchor !== null;
+  // Measures the bar width **when it appears** (not on every render → avoids a setState loop
+  // via an inline ref-callback).
+  useLayoutEffect(() => {
+    if (styleShown && styleBarRef.current) {
+      const w = styleBarRef.current.offsetWidth;
+      setStyleBarW((prev) => (prev !== w ? w : prev));
+    }
+  }, [styleShown]);
+  // Horizontal clamp to keep the bar fully inside the frame (otherwise clipped by overflow-hidden).
+  const styleLeft = styleAnchor
+    ? styleBarW
+      ? Math.min(Math.max(styleAnchor.x, styleBarW / 2 + 8), size.w - styleBarW / 2 - 8)
+      : styleAnchor.x
+    : 0;
+
+  return (
+    <div
+      ref={wrapperRef}
+      className={fixedSize ? 'relative inline-block' : 'relative min-h-0 min-w-0 flex-1'}
+    >
+      <canvas
+        ref={canvasRef}
+        width={Math.round(size.w * dpr)}
+        height={Math.round(size.h * dpr)}
+        style={{
+          width: size.w,
+          height: size.h,
+          // Shared board background (collab): overrides the theme default (class below) when set.
+          ...(background ? { backgroundColor: cssColor(background) } : {}),
+        }}
+        tabIndex={0}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={() => awareness && publishCursor(awareness, null)}
+        onDoubleClick={handleDoubleClick}
+        onKeyDown={handleKeyDown}
+        className="block touch-none bg-[#f4f4f5] outline-none dark:bg-[#0c0c0e]"
+        aria-label="Surface de dessin du whiteboard"
+        role="img"
+      />
+      {/* Connection handles on hover: click = same shape in the direction; drag = connector. */}
+      {connectHandles.map((h) => (
+        <button
+          key={h.dir}
+          type="button"
+          aria-label={`Connecter (${{ n: 'haut', e: 'droite', s: 'bas', w: 'gauche' }[h.dir]})`}
+          onPointerDown={startConnect(h.fromId, h.dir)}
+          className="absolute z-10 size-3 -translate-x-1/2 -translate-y-1/2 cursor-crosshair rounded-full border-2 border-accent bg-surface shadow transition-transform hover:scale-150"
+          style={{ left: h.x, top: h.y }}
+        />
+      ))}
+      {/* Elbow handle of a selected connector: drag to move the middle segment
+          (up/down or left/right); double-click to recenter (auto). */}
+      {elbowHandle && (
+        <button
+          type="button"
+          aria-label="Déplacer le coude du connecteur"
+          onPointerDown={startElbowDrag(elbowHandle.id, elbowHandle.axis)}
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            engine.setConnectorMidpoint(elbowHandle.id, null);
+            onChange?.();
+            draw();
+          }}
+          className={`absolute z-10 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-accent bg-surface shadow transition-transform hover:scale-150 ${
+            elbowHandle.axis === 'y' ? 'cursor-ns-resize' : 'cursor-ew-resize'
+          }`}
+          style={{ left: elbowHandle.x, top: elbowHandle.y }}
+        />
+      )}
+      {/* Anchor points of the target during a drag: only the **active** side (closest to the
+          cursor, = where the link will attach) is highlighted; the others stay subtle. */}
+      {dropHandles.map((h) => {
+        const active = h.dir === dragSide;
+        return (
+          <span
+            key={h.dir}
+            aria-hidden="true"
+            className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full transition-all ${
+              active
+                ? 'z-20 size-4 border-2 border-accent bg-accent shadow'
+                : 'z-10 size-2 border border-muted bg-surface opacity-50'
+            }`}
+            style={{ left: h.x, top: h.y }}
+          />
+        );
+      })}
+      {/* Connector line being drawn (drag from a handle). */}
+      {connectLine && (
+        <svg
+          className="pointer-events-none absolute inset-0 z-10"
+          width={size.w}
+          height={size.h}
+          aria-hidden="true"
+        >
+          <line
+            x1={connectLine.ax}
+            y1={connectLine.ay}
+            x2={connectLine.tx}
+            y2={connectLine.ty}
+            stroke="var(--color-accent)"
+            strokeWidth={2}
+            strokeDasharray="5 4"
+          />
+        </svg>
+      )}
+      {styleAnchor && (
+        <div
+          ref={styleBarRef}
+          className={`pointer-events-auto absolute z-20 -translate-x-1/2 ${
+            styleAbove ? '-translate-y-full' : ''
+          }`}
+          style={{
+            left: styleLeft,
+            top: styleAbove ? styleAnchor.topY - 12 : styleAnchor.botY + 12,
+          }}
+        >
+          <div className="rounded-xl border border-border bg-surface p-1.5 shadow-xl">
+            <StylePanel
+              engine={engine}
+              onChange={() => {
+                onChange?.();
+                draw();
+              }}
+            />
+          </div>
+        </div>
+      )}
+      {remoteCursors.map((cursor) => {
+        const pos = worldToScreen(viewport, { x: cursor.x, y: cursor.y });
+        if (pos.x < 0 || pos.y < 0 || pos.x > size.w || pos.y > size.h) return null;
+        return (
+          <div
+            key={cursor.clientId}
+            className="pointer-events-none absolute z-10 select-none"
+            style={{ left: pos.x, top: pos.y }}
+            aria-hidden="true"
+          >
+            {/* **Arrow** cursor (multiplayer style): the tip is exactly on the peer's position,
+                filled with their color, white outline to stay readable on any background. */}
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 16 16"
+              className="block drop-shadow-sm"
+              style={{ color: cssColor(cursor.color) }}
+            >
+              <path
+                d="M0 0 L11 4 L4 11 Z"
+                fill="currentColor"
+                stroke="white"
+                strokeWidth="1"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span
+              className="absolute left-3.5 top-3.5 whitespace-nowrap rounded px-1 text-[10px] text-white"
+              style={{ backgroundColor: cssColor(cursor.color) }}
+            >
+              {cursor.name}
+            </span>
+          </div>
+        );
+      })}
+      {editing
+        ? (() => {
+            const ed = editorStyle();
+            return (
+              <InlineEditor
+                initial={editing.value}
+                style={ed?.style}
+                decoration={ed?.decoration ?? 'none'}
+                onCommit={(text) => commitEditing(text)}
+                onCancel={() => setEditing(null)}
+              />
+            );
+          })()
+        : null}
+      <div
+        className="absolute bottom-2 right-2 flex items-center gap-1 rounded-md border border-border bg-surface px-1 py-0.5 text-xs text-text shadow-sm"
+        role="group"
+        aria-label="Contrôles de zoom"
+      >
+        <button
+          type="button"
+          className="px-1.5 py-0.5 hover:text-accent"
+          aria-label="Dézoomer"
+          onClick={() => setViewport(zoomAt(vpRef.current, 1 / 1.2, zoomPivot))}
+        >
+          −
+        </button>
+        <button
+          type="button"
+          className="min-w-[3rem] px-1 py-0.5 tabular-nums hover:text-accent"
+          aria-label="Réinitialiser le zoom"
+          onClick={resetView}
+        >
+          {percent}%
+        </button>
+        <button
+          type="button"
+          className="px-1.5 py-0.5 hover:text-accent"
+          aria-label="Zoomer"
+          onClick={() => setViewport(zoomAt(vpRef.current, 1.2, zoomPivot))}
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
