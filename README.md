@@ -6,10 +6,10 @@ processii is a CRDT-backed (Yjs) whiteboard engine specialized for **process boa
 
 ## Packages
 
-| Directory | What it is |
-|---|---|
+| Directory                                  | What it is                                                                                                                                                                                                                                                    |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`packages/processii`](packages/processii) | `@binarii/processii` — the engine (scene model, Yjs CRDT board, Canvas 2D renderer, interop) **and** the shared React editing surface (`WhiteboardEditor`, toolbar, style/side panels, presence). DOM-free core; React layer with React as a peer dependency. |
-| [`apps/standalone`](apps/standalone) | The standalone P2P web app (PWA): offline-first via IndexedDB, optional peer-to-peer collaboration via WebRTC, no account and no backend. Doubles as the reference integration. |
+| [`apps/standalone`](apps/standalone)       | The standalone P2P web app (PWA): offline-first via IndexedDB, optional peer-to-peer collaboration via WebRTC, no account and no backend. Doubles as the reference integration.                                                                               |
 
 ## Key properties
 
