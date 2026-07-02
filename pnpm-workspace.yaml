@@ -1,0 +1,6 @@
+packages:
+  - 'packages/*'
+  - 'apps/*'
+# esbuild (transitive via vitest) needs its post-install script for the native binary.
+allowBuilds:
+  esbuild: true

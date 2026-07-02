@@ -1,0 +1,43 @@
+name: Release (npm)
+
+# Manual publication of @binarii/processii to npm.
+# Prerequisites (not yet configured — this workflow is inert until then):
+#   - an npm organization granting rights on the @binarii scope
+#   - an automation token stored as the NPM_TOKEN repository secret
+# Publishing stays manual (workflow_dispatch) while the package is 0.x / mirror phase.
+on:
+  workflow_dispatch:
+    inputs:
+      dist-tag:
+        description: 'npm dist-tag (latest, next, …)'
+        required: true
+        default: 'latest'
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build & test
+        run: pnpm build && pnpm test
+
+      - name: Publish @binarii/processii
+        run: pnpm --filter @binarii/processii publish --access public --tag ${{ inputs.dist-tag }} --no-git-checks --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
