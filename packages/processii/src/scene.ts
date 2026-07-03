@@ -281,6 +281,27 @@ export class WhiteboardParseError extends Error {
 }
 
 /**
+ * Thrown when a persisted Y.Doc declares a `schemaVersion` **newer** than this build supports — a
+ * breaking structural change it cannot safely read. The host should surface an "update required"
+ * state rather than mis-render old/foreign data. Raised by `WhiteboardBoard.assertReadable`; the
+ * reverse direction (a newer build reading an older doc) is always supported ("N+1 reads N").
+ */
+export class WhiteboardSchemaVersionError extends Error {
+  override readonly name = 'WhiteboardSchemaVersionError';
+  constructor(
+    /** Version stamped in the document. */
+    readonly found: number,
+    /** Highest version this build can read. */
+    readonly supported: number,
+  ) {
+    super(
+      `Unsupported whiteboard schema version ${found} (this build reads up to ${supported}). ` +
+        `Update @binarii/processii to open this document.`,
+    );
+  }
+}
+
+/**
  * Validates an unknown object as a scene element. Throws a typed `WhiteboardParseError` when
  * invalid. Applies the default values (style, markers, z, angle…), hence returns a complete element.
  */

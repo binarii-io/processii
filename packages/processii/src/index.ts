@@ -34,6 +34,7 @@ export {
   parseScene,
   emptyScene,
   WhiteboardParseError,
+  WhiteboardSchemaVersionError,
   type ElementKind,
   type StepEmotion,
   type SwimlaneColor,
@@ -46,7 +47,13 @@ export {
 } from './scene.js';
 
 // --- CRDT board (Yjs) ---
-export { WhiteboardBoard, createBoard, boardFromDoc, type ElementPatch } from './board.js';
+export {
+  WhiteboardBoard,
+  createBoard,
+  boardFromDoc,
+  DOC_SCHEMA_VERSION,
+  type ElementPatch,
+} from './board.js';
 
 // --- Engine + rendering (model) ---
 export {

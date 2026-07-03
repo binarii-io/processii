@@ -20,6 +20,7 @@ import {
   elementSchema,
   parseElement,
   swimlaneSchema,
+  WhiteboardSchemaVersionError,
   type AgentGroup,
   type Marker,
   type Scene,
@@ -40,6 +41,17 @@ const SWIMLANES_WIDTH_KEY = 'swimlanesWidth';
 const DOC_NAME_KEY = 'docName';
 /** Key of the shared board background color (ui-kit token or CSS literal). */
 const BACKGROUND_KEY = 'background';
+/** Key of the persisted Y.Doc schema version inside the meta map (see `DOC_SCHEMA_VERSION`). */
+const SCHEMA_VERSION_KEY = 'schemaVersion';
+
+/**
+ * Current **Y.Doc schema version** — the shape of the persisted CRDT layout this build writes and
+ * can read. Bumped ONLY on a breaking structural change (a new/renamed top-level Y.Map key, a new
+ * element `kind`, a changed literal); additive field changes are already tolerated on read and do
+ * NOT bump it. Distinct from `sceneSchema.version` (the exported `Scene`/bundle JSON version).
+ * See the README "Document format & compatibility" section and `WhiteboardBoard.assertReadable`.
+ */
+export const DOC_SCHEMA_VERSION = 1;
 
 /** Numeric or textual geometry/style fields stored flat in an element's Y.Map. */
 type ElementRecord = Record<string, unknown>;
@@ -109,6 +121,11 @@ export class WhiteboardBoard {
    * (`createHistory`) undo only this user's edits, never the peers'.
    */
   private readonly origin = Symbol('whiteboard-board');
+  /**
+   * Distinct origin for the schema-version stamp so it is **not** captured by the undo history
+   * (which tracks `this.origin` only) — the version marker must survive undo/redo.
+   */
+  private readonly schemaOrigin = Symbol('whiteboard-schema-version');
 
   constructor(doc: CrdtDoc) {
     this.doc = doc;
@@ -147,6 +164,7 @@ export class WhiteboardBoard {
    */
   addElement(input: unknown): WhiteboardElement {
     const element = parseElement(input);
+    this.ensureSchemaVersion();
     this.doc.transact(() => {
       this.elements.set(element.id, recordToYMap(elementToRecord(element)));
     }, this.origin);
@@ -217,6 +235,7 @@ export class WhiteboardBoard {
   /** Adds/replaces a swimlane (validated input). */
   addSwimlane(input: unknown): Swimlane {
     const lane = swimlaneSchema.parse(input);
+    this.ensureSchemaVersion();
     this.doc.transact(() => {
       this.swimlanes.set(lane.id, recordToYMap({ ...lane }));
     }, this.origin);
@@ -300,11 +319,66 @@ export class WhiteboardBoard {
     }, this.origin);
   }
 
+  // --- schema version (document format compatibility) ---
+
+  /**
+   * Y.Doc schema version stamped in this document. An **unstamped** doc (legacy, or brand-new
+   * before its first edit) reads as `1` — the format that predates this marker.
+   */
+  getSchemaVersion(): number {
+    const value = this.meta.get(SCHEMA_VERSION_KEY);
+    return typeof value === 'number' && Number.isInteger(value) && value > 0
+      ? value
+      : DOC_SCHEMA_VERSION;
+  }
+
+  /**
+   * Compatibility gate. Throws {@link WhiteboardSchemaVersionError} when the document was written
+   * by a **newer** schema version than this build supports — a breaking change it cannot safely
+   * read. Call it once a document is hydrated (persistence `whenLoaded`, remote sync) before
+   * trusting reads. The reverse direction (this build reads an OLDER doc) is always supported
+   * ("N+1 reads N") and would migrate on read once a future version needs it.
+   */
+  assertReadable(): void {
+    const raw = this.meta.get(SCHEMA_VERSION_KEY);
+    if (raw === undefined) return; // unstamped (legacy or brand-new) → the v1 baseline, readable.
+    // A present marker must be a supported integer version. Anything else — a newer version, or a
+    // malformed/foreign value (non-integer, out of range, non-number) — is REFUSED rather than
+    // optimistically read as v1: the whole point of the gate is "refuse, never mis-read".
+    if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= DOC_SCHEMA_VERSION) {
+      return;
+    }
+    throw new WhiteboardSchemaVersionError(
+      typeof raw === 'number' ? raw : Number.NaN,
+      DOC_SCHEMA_VERSION,
+    );
+  }
+
+  /**
+   * Stamps {@link DOC_SCHEMA_VERSION} on first authoring, **only if absent** — a fresh or legacy
+   * (v1, unstamped) doc gets marked without clobbering an existing version. Runs in its own
+   * transaction under `schemaOrigin`, so the marker is not undoable. Must be called **before**
+   * (never inside) a tracked mutation, else Yjs folds it into `this.origin`.
+   *
+   * **Ordering caveat:** this writes on user authoring, which always follows hydration
+   * (persistence/peer sync), so it never races an incoming version. A host that instead stamps a
+   * blank doc that may *still* hydrate a **different** (higher) version must do so **after**
+   * hydration — a concurrent same-key write is resolved by Yjs LWW (by client id, not by value),
+   * so an eager local stamp could otherwise clobber a higher persisted version down to v1.
+   */
+  private ensureSchemaVersion(): void {
+    if (this.meta.has(SCHEMA_VERSION_KEY)) return;
+    this.doc.transact(() => {
+      this.meta.set(SCHEMA_VERSION_KEY, DOC_SCHEMA_VERSION);
+    }, this.schemaOrigin);
+  }
+
   // --- groups (process board collection) ---
 
   /** Adds/replaces a group (validated input). */
   addAgentGroup(input: unknown): AgentGroup {
     const group = agentGroupSchema.parse(input);
+    this.ensureSchemaVersion();
     this.doc.transact(() => {
       this.agentGroups.set(group.id, recordToYMap({ ...group }));
     }, this.origin);
@@ -373,10 +447,12 @@ export class WhiteboardBoard {
   }
 
   /**
-   * Replaces the whole content with a scene's (import). Validated element by element. Atomic
-   * (a single transaction) → one CRDT update, one observer notification.
+   * Replaces the whole content with a scene's (import). Validated element by element. The rewrite
+   * is atomic (a single transaction → one CRDT update); on a document's very first authoring it is
+   * preceded by a one-time, separate schema-version stamp (see `ensureSchemaVersion`).
    */
   loadScene(scene: Scene): void {
+    this.ensureSchemaVersion();
     this.doc.transact(() => {
       this.elements.clear();
       for (const element of scene.elements) {
@@ -416,7 +492,12 @@ export function createBoard(options: CreateDocOptions = {}): WhiteboardBoard {
 
 /** Attaches a board view to an existing Y.Doc (shared by other modules / providers). */
 export function boardFromDoc(doc: CrdtDoc): WhiteboardBoard {
-  return new WhiteboardBoard(doc);
+  const board = new WhiteboardBoard(doc);
+  // A view is attached to an **already-hydrated** doc → fail fast on an unreadable (newer) schema
+  // version rather than mis-reading. The create-then-hydrate path (standalone) instead calls
+  // `assertReadable()` itself after the persistence provider loads.
+  board.assertReadable();
+  return board;
 }
 
 // --- internal helpers ---

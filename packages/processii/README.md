@@ -79,6 +79,33 @@ schema **before** mutating the `Y.Map`: a patch that would break the invariant (
 an invalid update cannot poison the reads (`toScene`/`listElements`/`getElement`/`toRenderModel`),
 which revalidate as well.
 
+## Document format & compatibility
+
+Persisted boards (users' IndexedDB, consumers' databases) carry a **Y.Doc schema version** — the
+integer `schemaVersion` in the board's meta map, exposed as the constant **`DOC_SCHEMA_VERSION`**
+(currently `1`). It is stamped on a document's first edit and read back via
+`board.getSchemaVersion()` (an older, unstamped document reads as `1`).
+
+**Compatibility policy (guaranteed):**
+
+- **A newer build reads an older document — always ("N+1 reads N").** Field-level changes are
+  already additive-tolerant (zod strips unknown keys and defaults missing ones), so most evolution
+  needs no bump; a future breaking change migrates the old document **on read**.
+- **An older build meets a newer document — it refuses.** `board.assertReadable()` (and
+  `engine.assertReadable()`) throws **`WhiteboardSchemaVersionError`** when the document's
+  `schemaVersion` exceeds `DOC_SCHEMA_VERSION` — a breaking change the build cannot understand. It
+  never silently mis-reads persisted or shared data; the host surfaces an "update required" state.
+  `boardFromDoc`/`engineFromDoc` run the check **eagerly** (they attach to an already-hydrated
+  doc); a host that creates **then** hydrates (e.g. via a persistence provider) calls
+  `assertReadable()` itself once `whenLoaded()` resolves.
+
+**When to bump `DOC_SCHEMA_VERSION`:** only for a **breaking structural change** to the Y.Doc
+layout — a new/renamed top-level `Y.Map` key, a new element `kind`, a changed literal — paired with
+a migration from the previous version. Adding an optional field does **not** bump it.
+
+This `schemaVersion` (the live CRDT layout) is **distinct** from `sceneSchema.version` (the exported
+`Scene`/bundle JSON version): two surfaces, two version numbers, which may evolve independently.
+
 ## Rendering
 
 `engine.toRenderModel()` produces a sorted model + selection state. `renderToCanvas(ctx, model)`

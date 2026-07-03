@@ -319,6 +319,17 @@ export class WhiteboardEngine {
   setBackground(color: string | null): void {
     this.board.setBackground(color);
   }
+  /** Y.Doc schema version stamped in this document (see `DOC_SCHEMA_VERSION`). */
+  getSchemaVersion(): number {
+    return this.board.getSchemaVersion();
+  }
+  /**
+   * Throws `WhiteboardSchemaVersionError` when the document is newer than this build supports. Call
+   * after hydration (persistence `whenLoaded`, remote sync); see `WhiteboardBoard.assertReadable`.
+   */
+  assertReadable(): void {
+    this.board.assertReadable();
+  }
   /** Id of the swimlane under the **world** point, or `undefined`. Stacked by `order`. */
   laneAtPoint(p: { x: number; y: number }): string | undefined {
     const width = this.getSwimlanesWidth();
