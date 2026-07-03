@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType } from 'react';
+import { useEffect, useState, type ComponentType, type ReactNode } from 'react';
 import {
   IconButton,
   Popover,
@@ -59,21 +59,45 @@ function elementId(): string {
  */
 function ToolButton({
   label,
+  tooltip,
   icon: Icon,
   variant = 'secondary',
   ...props
 }: {
   readonly label: string;
+  /**
+   * Tooltip caption; defaults to `label`. Pass a distinct value to explain a
+   * **disabled** state (e.g. why the tool is unavailable) — the caption is
+   * surfaced even when the button is disabled.
+   */
+  readonly tooltip?: ReactNode;
   readonly icon: ComponentType<LucideProps>;
 } & Omit<IconButtonProps, 'label' | 'children' | 'size'>) {
+  const button = (
+    <IconButton size="sm" variant={variant} label={label} {...props}>
+      <Icon aria-hidden className="size-4" />
+    </IconButton>
+  );
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <IconButton size="sm" variant={variant} label={label} {...props}>
-          <Icon aria-hidden className="size-4" />
-        </IconButton>
+        {props.disabled ? (
+          /*
+            A disabled <button> emits no pointer/focus events, so it can't be a
+            tooltip trigger on its own. Only in that case, wrap it in a focusable
+            span that stands in as the trigger — the caption (Radix's
+            `aria-describedby`) then lands on the span the user hovers/focuses.
+            Enabled buttons stay their own trigger, so the description keeps
+            being announced on the focused button (no screen-reader regression).
+          */
+          <span className="inline-flex shrink-0" tabIndex={0}>
+            {button}
+          </span>
+        ) : (
+          button
+        )}
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent>{tooltip ?? label}</TooltipContent>
     </Tooltip>
   );
 }
@@ -262,6 +286,11 @@ export function Toolbar({
         />
         <ToolButton
           label="Connecteur"
+          tooltip={
+            selectionCount === 2
+              ? 'Connecter les 2 éléments sélectionnés'
+              : 'Sélectionnez exactement 2 éléments pour les connecter'
+          }
           icon={Spline}
           disabled={selectionCount !== 2}
           onClick={() => {
