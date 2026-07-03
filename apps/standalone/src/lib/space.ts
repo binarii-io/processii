@@ -18,6 +18,7 @@ import {
   destroyAwareness,
   parseScene,
   publishIdentity,
+  WhiteboardSchemaVersionError,
   type CrdtAwareness,
   type Participant,
   type PersistenceProviderFactory,
@@ -55,6 +56,11 @@ export interface MountDocumentOptions {
   readonly initialScene?: unknown;
   readonly persistenceFactory?: PersistenceProviderFactory;
   readonly transportFactory?: TransportProviderFactory;
+  /**
+   * Called when the persisted document declares a schema version this build cannot read (a newer,
+   * breaking format). Lets the app surface an "update required" message instead of mis-rendering.
+   */
+  readonly onSchemaError?: (error: WhiteboardSchemaVersionError) => void;
 }
 
 /**
@@ -74,6 +80,23 @@ export function mountDocument(options: MountDocumentOptions): MountedDocument {
     ...(options.transportFactory ? { transport: options.transportFactory } : {}),
     ...(options.persistenceFactory ? { persistence: options.persistenceFactory } : {}),
   });
+
+  // Compatibility gate: this engine is created fresh (not via `engineFromDoc`), so the package's
+  // eager check does not run. Once the persisted state (IndexedDB) is applied, refuse a document
+  // written by a newer schema version rather than mis-rendering it.
+  const persistence = session.persistence;
+  if (persistence) {
+    void persistence.whenLoaded().then(() => {
+      try {
+        engine.assertReadable();
+      } catch (error) {
+        if (error instanceof WhiteboardSchemaVersionError) {
+          if (options.onSchemaError) options.onSchemaError(error);
+          else console.error(error.message);
+        }
+      }
+    });
+  }
 
   // Presence: awareness on the board's doc, local identity published right away. Mutable: it is
   // **renewed** on every (re)connection (see `renewAwareness`).

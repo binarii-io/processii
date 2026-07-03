@@ -127,6 +127,15 @@ export function App({ wiring, participant }: AppProps) {
 
   const space = useSpace({
     participant: identity,
+    onSchemaError: (error) => {
+      // Minimal feedback (no toast system in this self-contained site); never in SSR/tests.
+      console.error(error.message);
+      if (typeof window !== 'undefined' && typeof window.alert === 'function')
+        window.alert(
+          'Ce document a été créé avec une version plus récente de l’application. ' +
+            'Mettez-la à jour pour l’ouvrir.',
+        );
+    },
     // No local persistence in demo mode (E2E/preview without deterministic IndexedDB).
     ...(wiring.demo
       ? {}

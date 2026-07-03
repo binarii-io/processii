@@ -111,6 +111,8 @@ export interface UseSpaceOptions {
   persistenceFactoryFor?: (
     documentId: string,
   ) => import('@binarii/processii').PersistenceProviderFactory;
+  /** Surfaces a document written by a newer, unreadable schema version (see `mountDocument`). */
+  onSchemaError?: (error: import('@binarii/processii').WhiteboardSchemaVersionError) => void;
 }
 
 export function useSpace(options: UseSpaceOptions): SpaceApi {
@@ -142,6 +144,7 @@ export function useSpace(options: UseSpaceOptions): SpaceApi {
         // Empty scene (fresh or restored doc) → IndexedDB rehydrates; otherwise (import) it is loaded.
         ...(isEmptyScene(doc.scene) ? {} : { initialScene: doc.scene }),
         ...(persistenceFactory ? { persistenceFactory } : {}),
+        ...(options.onSchemaError ? { onSchemaError: options.onSchemaError } : {}),
       });
       mounted.current.set(doc.id, m);
       return m;

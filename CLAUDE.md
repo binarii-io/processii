@@ -15,8 +15,10 @@
 - **This repo is the source of truth** for a published npm package. The public API is **every
   surface of the `exports` map** — main entry, `/ui` subpath, `./styles.css` (token names included)
   and `./tailwind-preset`. Any change to any of them is a semver event, called out in the PR.
-- **Never break the persisted Y.Doc format** (users' IndexedDB, consumers' databases). Additive
-  changes only until the schema-version mechanism lands (issue #5, before 1.0).
+- **Never break the persisted Y.Doc format silently** (users' IndexedDB, consumers' databases).
+  Additive field changes need no bump; a **breaking layout change** bumps `DOC_SCHEMA_VERSION` and
+  ships a migration (a newer build reads older docs; an older build refuses newer ones). See the
+  package README § "Document format & compatibility".
 - **The core stays DOM-free** (React only in `*.tsx`); **no hard-coded colors** (semantic
   `--color-*` tokens); **no new runtime dependency** in the package without discussion.
 - Merges to `main` that touch the build inputs auto-deploy the standalone app (Firebase Hosting,
