@@ -1,7 +1,9 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "types": ["react", "react-dom"]
+    "types": ["react", "react-dom"],
+    "sourceMap": false,
+    "declarationMap": false
   },
   "exclude": ["dist", "**/*.test.ts", "**/*.test.tsx", "src/test/**/*"]
 }
