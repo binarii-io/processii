@@ -30,6 +30,9 @@ pnpm lint && pnpm typecheck && pnpm format:check
 pnpm --filter processii-standalone test:e2e   # Playwright E2E (chromium)
 ```
 
+First E2E run on a fresh machine: install the Playwright browser once with
+`pnpm --filter processii-standalone exec playwright install chromium`.
+
 ### Quality bar
 
 - TypeScript strict, **no unjustified `any`**.
