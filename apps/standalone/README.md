@@ -2,39 +2,35 @@
 
 > **Public P2P site** — a collaborative whiteboard running **entirely in the browser**:
 > no account, no server backend. Local multi-document space (offline-first via IndexedDB),
-> **P2P** collaboration via WebRTC (`docs/01`, `docs/04`).
+> **P2P** collaboration via WebRTC.
 
 This app **assembles** existing building blocks — it reimplements no engine nor any editing UI:
 
 - engine + rendering **and React editing UI**: `@binarii/processii` (`createEngine`, `renderToCanvas`,
   `connectAdapters`, and the `BoardCanvas`, `Toolbar`, `StylePanel`, `SidePanel`,
   `PresenceAvatars` components + presence helpers). These components used to live here; they were
-  **promoted into the package** so the web app (`@app/web`) and this standalone share **the same
+  **promoted into the package** so a server-synced host app and this standalone share **the same
   editing code**. The standalone now only brings its **own chrome**: P2P sessions, invite link,
   sharing, multi-document sidebar, floating header (see `src/app.tsx`, `src/lib/space.ts`);
 - CRDT provider contracts: re-exported by `@binarii/processii` (`TransportProvider`,
-  `PersistenceProvider`, `ConnectionStatus`, doc/awareness helpers — structurally identical to
-  `@app/crdt-core`, ADR 0006);
-- UI components & tokens: `@binarii/processii/ui` (primitives vendored from ui-kit — `Button`,
+  `PersistenceProvider`, `ConnectionStatus`, doc/awareness helpers — the contract a host
+  implements);
+- UI components & tokens: `@binarii/processii/ui` (vendored primitives — `Button`,
   `Modal`, `Popover`, `AppShell`, … — plus the theme runtime helpers) and
   `@binarii/processii/styles.css` (embedded default values of the theming contract, light/dark).
   No hard-coded color; the Tailwind preset comes from `@binarii/processii/tailwind-preset`.
 
-> **Single dependency (since #95).** This app depends on **`@binarii/processii` only** — no
-> `@app/*` workspace package. That makes it self-sufficient so it can be mirrored as the showcase
-> app of the public repo `binarii-io/processii` (ADR 0006, mirror in lot #96). Unlike the memorii
-> apps, it imports `@binarii/processii/styles.css` (not the ui-kit stylesheet — one sheet only,
-> same CSS variables, identical rendering).
-
-> **Public mirror:** [`binarii-io/processii`](https://github.com/binarii-io/processii) — this app
-> is synced **one-way** (monorepo → public repo) as `apps/standalone` via `make mirror-processii`
-> (issue #96).
+> **Single dependency.** This app depends on **`@binarii/processii` only** — no other workspace
+> package — which keeps it self-contained. It is the showcase app of this repo,
+> [`binarii-io/processii`](https://github.com/binarii-io/processii), the **source of truth** for
+> the engine and this app. It imports `@binarii/processii/styles.css` (one sheet, the theming
+> contract's default values, light/dark).
 
 Communication happens **only** through this package's public interface (AGENTS.md).
 
 ## P2P model
 
-- **Host/guest star** (`docs/01`): a host opens a _room_; guests join it. Each peer exchanges its
+- **Host/guest star**: a host opens a _room_; guests join it. Each peer exchanges its
   Yjs updates over **direct WebRTC**; a public **signaling server** only serves as a rendezvous
   (it never sees the board content, end-to-end encrypted by the room _secret_).
 - **One session = a single document.** The transport binds to the Y.Doc of **one** document, not
@@ -290,7 +286,7 @@ Firebase project: **`processii`** (already set in `.firebaserc`). Public domain:
 pnpm --filter processii-standalone build
 
 # 2) Deploy (from this folder; project = processii via .firebaserc)
-cd apps/whiteboard-standalone
+cd apps/standalone
 npx firebase login
 npx firebase deploy --only hosting
 ```
@@ -304,8 +300,7 @@ npx firebase deploy --only hosting
 The only importable surface (`src/index.ts`) exposes the **reusable, network-free-testable**
 building blocks (the React app is NOT exported): bundle model, document mounting
 (`mountDocument`), CRDT providers (`createWebrtcProvider`, `createIndexeddbProvider`), signaling
-boundary, config and wiring (`createWiring`). This is the surface the `@app/vscode-ext` webview
-reuses.
+boundary, config and wiring (`createWiring`).
 
 ## Testing
 
@@ -348,8 +343,7 @@ fake-transport.ts`), including a late guest's initial sync and live propagation;
   cases: a card outside its lane is **actually** tidied into it (`moveStepToLane`) and a lane is
   **actually** enlarged (`updateSwimlane height`). The **actual geometry** is read via
   `window.__wbEngine` (the active engine, exposed **in demo mode only** `wiring.demo` because the
-  board is rendered on a pixel `<canvas>`). ⚠ Not run by the CI (which only runs the `@app/e2e`
-  and `@app/web` e2e): run locally;
+  board is rendered on a pixel `<canvas>`). Run by the CI (the `e2e` job in `ci.yml`);
 - **canvas (RTL)**: gesture routing to the engine — click selection, empty-click deselection,
   shift multi-selection, marquee, drag move, **handle resizing and rotation**, keyboard deletion
   (`PointerEvent` polyfilled in jsdom);

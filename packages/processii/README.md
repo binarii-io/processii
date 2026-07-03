@@ -1,24 +1,19 @@
 # @binarii/processii
 
 > Engine + rendering + **React UI** of a collaborative, **offline-first** whiteboard/process
-> board (Yjs), reusable in-app (server sync, `@app/web`) and in the P2P standalone
+> board (Yjs), reusable both by a server-synced host app and by the P2P standalone
 > (`processii-standalone`) — **a single editing code base** for both.
 
-**Document-shaped** module (docs/02): native data, CRDT, live collab, offline-first, pluggable
+**Document-shaped** module: native data, CRDT, live collab, offline-first, pluggable
 sources. The importable surfaces are `src/index.ts` (engine + editor + CRDT/adapters contract)
 and the **`@binarii/processii/ui`** subpath (vendored UI primitives).
 
-> **Open source (ADR 0006).** This package targets the public repo **`binarii-io/processii`**
-> (Apache-2.0, npm `@binarii/processii`). Development stays in memorii-v2 (**mirror** strategy,
-> synced by script — issue #96); the directory is still named `packages/whiteboard`
-> (the mirror maps the paths). The package is **self-sufficient**: no workspace dependency —
-> what it needs from `crdt-core` (Yjs aliases, provider interfaces) and from `ui-kit`
-> (primitives, tokens) is **vendored** into `src/crdt/` and `src/ui/`, keeping the same type
-> names and CSS variable names.
-
-> **Public mirror:** [`binarii-io/processii`](https://github.com/binarii-io/processii) — this
-> directory is synced **one-way** (monorepo → public repo) as `packages/processii` via
-> `make mirror-processii` (issue #96).
+> **Open source.** This package lives in the public repo
+> [`binarii-io/processii`](https://github.com/binarii-io/processii) — its **source of truth** —
+> and is published to npm as `@binarii/processii` (Apache-2.0). It is **self-sufficient**: no
+> workspace dependency. The Yjs aliases and provider interfaces (`src/crdt/`) and the UI
+> primitives and tokens (`src/ui/`) are **vendored**, so a host can supply structurally
+> compatible implementations without any shared package.
 
 ## Layered architecture
 
@@ -34,8 +29,8 @@ scene      lossless native model (shapes/transforms) + zod validation at the bou
             ├─ history       undo/redo via Y.UndoManager, scoped to local edits
             ├─ connector     edge-to-edge routing of an arrow bound to two elements, pure
             └─ adapters      transport / persistence (src/crdt interfaces) + identity, pluggable
-  src/crdt   vendored Yjs helpers + provider interfaces (structural compat with crdt-core)
-  src/ui     vendored UI primitives + tokens/themes/preset (ui-kit theming contract)
+  src/crdt   vendored Yjs helpers + provider interfaces (the host-implemented contract)
+  src/ui     vendored UI primitives + tokens/themes/preset (the theming contract)
   excalidraw / drawio        lossy export + defensive import, markers for the irreducible
 ```
 
@@ -73,7 +68,7 @@ Each element is a `Y.Map` indexed by `id`. Two **concurrent modifications of dif
 of the same element merge without loss; the same field written concurrently is resolved
 deterministically by Yjs. Convergence proved by the tests (`board.collab.test.ts`). Network
 wiring (in-app websocket, standalone y-webrtc) goes through the **local provider interfaces**
-(`src/crdt/providers.ts`, structurally identical to crdt-core's) injected via the adapters —
+(`src/crdt/providers.ts`, the contract hosts implement) injected via the adapters —
 never hard-coded here.
 
 **Every write is a validated boundary.** `addElement`/`loadScene` validate the input, and
@@ -123,8 +118,8 @@ draws the handles (**single** selection) and the guides. Pure, tested modules.
 
 ## Process board (process model)
 
-Beyond the shapes, the engine carries the **process board** model (ADR 0005): memorii's
-`whiteboard` document type. In addition to the `step` elements (card nodes), the scene contains
+Beyond the shapes, the engine carries the **process board** model: the `whiteboard`
+document type. In addition to the `step` elements (card nodes), the scene contains
 two **collections** stored in the CRDT board next to the elements:
 
 - **swimlanes** (`Swimlane`) — ordered horizontal bands (`order`, `height`, `color`,
@@ -175,7 +170,7 @@ case becomes a straight line again; identical pinned sides, e.g. `n`→`n`, prod
 Optional arrowheads at the ends (`startArrow`/`endArrow`), rendered as solid triangles oriented
 along the last segment. `toScene`/`loadScene` cover elements + swimlanes + groups + width;
 `observe` notifies on **all** collections; the undo/redo history covers them all.
-`skills`/`deliverables` are **free-form labels** (no registry — adaptation, ADR 0005).
+`skills`/`deliverables` are **free-form labels** (no registry — free adaptation).
 
 **Rendering**: `toRenderModel()` computes the process layout — stacked swimlanes (cumulative y
 following `order`, shared width) and the groups' bboxes (enclosing the member steps + margin).
@@ -231,7 +226,7 @@ handled on the app side (overlay), via `updateElement`.
 
 The native format is lossless; the interop exports are **lossy**. Everything irreducible
 (field/attribute with no native equivalent) is stored in a **marker** (`Marker { format, data }`)
-attached to the element — **never silently lost** (docs/02). The re-export reinjects the marker →
+attached to the element — **never silently lost**. The re-export reinjects the marker →
 lossless round-trip for the marked data.
 
 | Format         | Export                                | Import                                  |
@@ -253,9 +248,9 @@ and points.
 
 ## React UI (shared editing surface)
 
-Beyond the DOM-free core, the package also exports the **React editing surface**, so the web app
-(`@app/web`) and the P2P standalone (`processii-standalone`) share **the same code**: a change
-to a component immediately benefits both apps (React in `peerDependencies`).
+Beyond the DOM-free core, the package also exports the **React editing surface**, so a
+server-synced host app and the P2P standalone (`processii-standalone`) share **the same code**: a
+change to a component immediately benefits both (React in `peerDependencies`).
 
 ```tsx
 import { WhiteboardEditor, useWhiteboardEngine } from '@binarii/processii';
@@ -294,40 +289,38 @@ never hard-coded.
 
 ## Theming (contract) & `/ui` subpath
 
-**Theming contract (ADR 0006).** All styling goes through **semantic CSS variables**
-`--color-<name>` (`bg`, `surface`, `surface-raised`, `text`, `muted`, `border`, `accent`, …)
-whose **names are `@app/ui-kit`'s** — the contract is the names, not the values:
+**Theming contract.** All styling goes through **semantic CSS variables** `--color-<name>`
+(`bg`, `surface`, `surface-raised`, `text`, `muted`, `border`, `accent`, …) — the contract is
+the names, not the values. A consumer either imports the **embedded default values** (light/dark
+themes, `import '@binarii/processii/styles.css'`) **or** provides its own variables under the
+**same names**, and consumes the matching **Tailwind preset** (`tailwindPreset` via `/ui`, or the
+`@binarii/processii/tailwind-preset` subpath). A host themes the board by **redefining the
+variables** (or by toggling `data-theme='dark'`/`.dark` on `:root`), without recompiling.
 
-- **within memorii**: the apps load `@app/ui-kit/styles.css` (+ ui-kit preset) and
-  **do not import** `@binarii/processii/styles.css` — ui-kit already provides the values,
-  rendering strictly unchanged. Beware: both sheets declare the **same variables on the same
-  selectors** (`:root`, `.dark`, `[data-theme=…]`); if both were loaded, the **import order**
-  would decide (last declaration) — hence the "single sheet" rule;
-- **outside memorii**: import the **embedded default values** (light/dark themes,
-  `import '@binarii/processii/styles.css'`) **or** provide your own variables (same names), and
-  consume the matching **Tailwind preset** (`tailwindPreset` via `/ui`, or the
-  `@binarii/processii/tailwind-preset` subpath). A host themes the board by **redefining the
-  variables** (or by toggling `data-theme='dark'`/`.dark` on `:root`), without recompiling.
+If a host already declares these same variables from its own stylesheet, it should **not** also
+import `@binarii/processii/styles.css`: both sheets declare the **same variables on the same
+selectors** (`:root`, `.dark`, `[data-theme=…]`), so loading both would let the **import order**
+decide (last declaration wins) — keep a single sheet.
 
 The list of names (`semanticColorNames`) and the `SemanticColorName` type live in
-`src/ui/tokens.ts` (consumed by `render.ts`). Renaming a variable = breaking the contract → ADR.
+`src/ui/tokens.ts` (consumed by `render.ts`). Renaming a variable **breaks the contract** — a
+semver event, called out in the PR.
 
-**`@binarii/processii/ui` subpath.** UI primitives vendored from ui-kit (same classes, same
-tokens): `Button`, `IconButton`, `Input`, `Textarea`, `Switch`, `Tooltip*`, `Popover*`,
-`Modal*` (added in #95), `AppShell`, `cn` helper, theme runtime helpers `applyTheme` /
-`getAppliedTheme` / `getSystemTheme` / `THEME_ATTRIBUTE` (added in #95 — same `data-theme` +
-`.dark` contract as ui-kit), `LucideIcon`/`LucideProps` types, plus tokens/themes/preset
-(`semanticColorNames`, `lightTheme`/`darkTheme`, `themeCssVarsBlock`, `tailwindPreset`). Used
-by the package's editing surface and by the standalone's chrome (lot #95); typed (`exports` →
-`dist/ui`). Within memorii, the apps keep using `@app/ui-kit` for their own chrome.
+**`@binarii/processii/ui` subpath.** Vendored UI primitives (same classes, same tokens):
+`Button`, `IconButton`, `Input`, `Textarea`, `Switch`, `Tooltip*`, `Popover*`, `Modal*`,
+`AppShell`, `cn` helper, theme runtime helpers `applyTheme` / `getAppliedTheme` /
+`getSystemTheme` / `THEME_ATTRIBUTE` (the `data-theme` + `.dark` contract), `LucideIcon`/
+`LucideProps` types, plus tokens/themes/preset (`semanticColorNames`, `lightTheme`/`darkTheme`,
+`themeCssVarsBlock`, `tailwindPreset`). Used by the package's editing surface and by the
+standalone's chrome; typed (`exports` → `dist/ui`).
 
 ## Providers (CRDT adapters)
 
-The transport/persistence interfaces live in the package (`src/crdt/providers.ts`) and are
-**structurally identical** to `@app/crdt-core`'s: `TransportProvider`,
-`PersistenceProvider`, `TransportProviderFactory`, `PersistenceProviderFactory`,
-`ConnectionStatus`, `isTransportProvider`/`isPersistenceProvider` guards. Consequence (TS
-structural typing): the memorii providers (in-app y-websocket, y-indexeddb, the standalone's
+The transport/persistence interfaces live in the package (`src/crdt/providers.ts`) and are the
+**contract a host implements**: `TransportProvider`, `PersistenceProvider`,
+`TransportProviderFactory`, `PersistenceProviderFactory`, `ConnectionStatus`,
+`isTransportProvider`/`isPersistenceProvider` guards. By TS structural typing, a host's own
+providers (e.g. y-websocket for server sync, y-indexeddb for persistence, the standalone's
 y-webrtc) remain **assignable without adaptation**. The full contract is re-exported by
 `src/index.ts`: `CrdtDoc`/`CrdtAwareness` aliases, `createDoc`/`CreateDocOptions`, doc helpers
 (`applyUpdate`, `encodeStateAsUpdate`, `syncDocs`, …) and awareness helpers (`createAwareness`,
@@ -370,7 +363,7 @@ const xml = exportToDrawio(engine.toScene());
 
 ## Dependencies
 
-**No workspace dependency** (self-sufficiency, ADR 0006). Runtime: `yjs` + `y-protocols`
+**No workspace dependency** (self-sufficiency by design). Runtime: `yjs` + `y-protocols`
 (CRDT/awareness), `zod` (validation at the boundaries), `lucide-react` (icons), Radix
 (`react-popover`/`react-slot`/`react-switch`/`react-tooltip`) + `class-variance-authority`/`clsx`/
 `tailwind-merge` (vendored UI primitives). `react`/`react-dom` as **`peerDependencies`**
