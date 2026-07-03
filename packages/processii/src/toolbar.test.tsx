@@ -78,6 +78,19 @@ describe('Toolbar — shapes + undo/redo', () => {
     const tip = await screen.findByRole('tooltip');
     expect(tip).toHaveTextContent(/exactement 2 éléments/i);
   });
+
+  it('an enabled tool button carries its tooltip description on the button itself (a11y)', async () => {
+    const engine = createEngine({ clientId: 1 });
+    render(<Toolbar engine={engine} />);
+
+    // Enabled buttons are their own tooltip trigger (no span wrapper), so the
+    // Radix `aria-describedby` lands on the focused button — screen readers
+    // announce the caption. Guards against regressing to a span-only trigger.
+    const rect = screen.getByRole('button', { name: 'Rectangle' });
+    fireEvent.focus(rect);
+    const tip = await screen.findByRole('tooltip');
+    expect(rect).toHaveAttribute('aria-describedby', tip.id);
+  });
 });
 
 describe('Toolbar — process board', () => {

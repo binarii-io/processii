@@ -73,20 +73,29 @@ function ToolButton({
   readonly tooltip?: ReactNode;
   readonly icon: ComponentType<LucideProps>;
 } & Omit<IconButtonProps, 'label' | 'children' | 'size'>) {
+  const button = (
+    <IconButton size="sm" variant={variant} label={label} {...props}>
+      <Icon aria-hidden className="size-4" />
+    </IconButton>
+  );
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        {/*
-          A disabled <button> emits no pointer/focus events, so a tooltip placed
-          directly on it would never appear. Wrapping it in a span keeps the
-          caption reachable: hover lands on the span, and `tabIndex` keeps it
-          focusable while the button is disabled.
-        */}
-        <span className="inline-flex" tabIndex={props.disabled ? 0 : undefined}>
-          <IconButton size="sm" variant={variant} label={label} {...props}>
-            <Icon aria-hidden className="size-4" />
-          </IconButton>
-        </span>
+        {props.disabled ? (
+          /*
+            A disabled <button> emits no pointer/focus events, so it can't be a
+            tooltip trigger on its own. Only in that case, wrap it in a focusable
+            span that stands in as the trigger — the caption (Radix's
+            `aria-describedby`) then lands on the span the user hovers/focuses.
+            Enabled buttons stay their own trigger, so the description keeps
+            being announced on the focused button (no screen-reader regression).
+          */
+          <span className="inline-flex shrink-0" tabIndex={0}>
+            {button}
+          </span>
+        ) : (
+          button
+        )}
       </TooltipTrigger>
       <TooltipContent>{tooltip ?? label}</TooltipContent>
     </Tooltip>
