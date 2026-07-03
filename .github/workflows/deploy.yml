@@ -13,6 +13,10 @@ on:
       - 'packages/processii/**'
       - 'apps/standalone/**'
       - 'pnpm-lock.yaml'
+      - 'package.json'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.base.json'
+      - 'turbo.json'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
@@ -28,6 +32,10 @@ env:
 
 jobs:
   deploy:
+    # Gate: set the repository variable FIREBASE_DEPLOY_ENABLED to 'true' once the
+    # FIREBASE_SERVICE_ACCOUNT_PROCESSII secret exists. Until then, runs are skipped
+    # cleanly instead of failing red on main.
+    if: vars.FIREBASE_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +54,8 @@ jobs:
         run: pnpm build
 
       - name: Deploy to Firebase Hosting (live)
-        uses: FirebaseExtended/action-hosting-deploy@v0
+        # SHA-pinned: this step receives the deploy service account (supply-chain hardening)
+        uses: FirebaseExtended/action-hosting-deploy@500ac625ca2dd40cbd15f7659af953801858032a # v0.11.0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PROCESSII }}
