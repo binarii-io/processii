@@ -2,13 +2,13 @@
 
 Thanks for your interest in processii!
 
-## How this repository works (mirror phase)
+## How this repository works
 
-processii is developed inside binarii's private monorepo and **mirrored** to this repository. During this transition phase:
+This repository is the **source of truth** for processii (it was initially extracted from binarii's private monorepo — early history is squashed on purpose).
 
 - **Issues**: open them here — they are triaged normally.
-- **Pull requests**: welcome, but they are not merged directly. A maintainer imports accepted changes into the monorepo (with your authorship preserved via `Co-authored-by`), and they come back here through the next sync. This limitation goes away once this repository becomes the source of truth (planned once the public API stabilizes — tracked in the README).
-- **History**: sync commits may squash internal work; the initial import is squashed on purpose.
+- **Pull requests**: welcome and merged here. `main` is protected: changes land through a PR with a green CI (build, lint, typecheck, unit tests, Playwright E2E). A maintainer reviews every PR.
+- **Releases**: `@binarii/processii` is versioned with semver (`0.x` while the public API settles) and published to npm through the release workflow.
 
 ## Developer Certificate of Origin (DCO)
 

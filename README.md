@@ -44,7 +44,7 @@ See [`packages/processii/README.md`](packages/processii/README.md) for the full 
 
 ## Status & governance
 
-processii is extracted from the memorii monorepo and is currently **mirrored** from it: the private monorepo is the source of truth during the transition, and changes land here through a sync pipeline. External issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for how they are integrated while the mirror is in place.
+processii was extracted from the memorii monorepo and is now a **standalone project**: this repository is the source of truth. Development happens here through pull requests — `main` is protected and every change needs a green CI. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - License: [Apache-2.0](LICENSE)
 - npm: `@binarii/processii` (publication planned; not yet on the registry)
