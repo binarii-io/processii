@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType } from 'react';
+import { useEffect, useState, type ComponentType, type ReactNode } from 'react';
 import {
   IconButton,
   Popover,
@@ -59,21 +59,36 @@ function elementId(): string {
  */
 function ToolButton({
   label,
+  tooltip,
   icon: Icon,
   variant = 'secondary',
   ...props
 }: {
   readonly label: string;
+  /**
+   * Tooltip caption; defaults to `label`. Pass a distinct value to explain a
+   * **disabled** state (e.g. why the tool is unavailable) — the caption is
+   * surfaced even when the button is disabled.
+   */
+  readonly tooltip?: ReactNode;
   readonly icon: ComponentType<LucideProps>;
 } & Omit<IconButtonProps, 'label' | 'children' | 'size'>) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <IconButton size="sm" variant={variant} label={label} {...props}>
-          <Icon aria-hidden className="size-4" />
-        </IconButton>
+        {/*
+          A disabled <button> emits no pointer/focus events, so a tooltip placed
+          directly on it would never appear. Wrapping it in a span keeps the
+          caption reachable: hover lands on the span, and `tabIndex` keeps it
+          focusable while the button is disabled.
+        */}
+        <span className="inline-flex" tabIndex={props.disabled ? 0 : undefined}>
+          <IconButton size="sm" variant={variant} label={label} {...props}>
+            <Icon aria-hidden className="size-4" />
+          </IconButton>
+        </span>
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent>{tooltip ?? label}</TooltipContent>
     </Tooltip>
   );
 }
@@ -262,6 +277,11 @@ export function Toolbar({
         />
         <ToolButton
           label="Connecteur"
+          tooltip={
+            selectionCount === 2
+              ? 'Connecter les 2 éléments sélectionnés'
+              : 'Sélectionnez exactement 2 éléments pour les connecter'
+          }
           icon={Spline}
           disabled={selectionCount !== 2}
           onClick={() => {

@@ -64,6 +64,20 @@ describe('Toolbar — shapes + undo/redo', () => {
     const { getByRole } = render(<Toolbar engine={engine} selectionCount={1} />);
     expect(getByRole('button', { name: 'Connecteur' })).toBeDisabled();
   });
+
+  it('"Connecteur", while disabled, explains that exactly 2 elements are required', async () => {
+    const engine = createEngine({ clientId: 1 });
+    render(<Toolbar engine={engine} selectionCount={1} />);
+
+    const connect = screen.getByRole('button', { name: 'Connecteur' });
+    expect(connect).toBeDisabled();
+
+    // A disabled <button> emits no pointer/focus events, so the hint has to be
+    // reachable through the focusable span wrapper ToolButton adds around it.
+    fireEvent.focus(connect.parentElement as HTMLElement);
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent(/exactement 2 éléments/i);
+  });
 });
 
 describe('Toolbar — process board', () => {
