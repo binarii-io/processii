@@ -61,6 +61,18 @@ describe('board — Y.Doc schema version', () => {
     }
   });
 
+  it('refuses a present-but-malformed marker instead of reading it as v1', () => {
+    // A newer version, a non-integer, an out-of-range, or a non-number marker must all be refused
+    // (the gate is "refuse, never mis-read"), not optimistically downgraded to the v1 baseline.
+    const malformed: unknown[] = [DOC_SCHEMA_VERSION + 0.5, 0, -1, Number.NaN, '2'];
+    for (const bad of malformed) {
+      const board = createBoard({ clientId: 1 });
+      board.addElement(rect('a1'));
+      rawMeta(board).set(SCHEMA_VERSION_KEY, bad);
+      expect(() => board.assertReadable()).toThrow(WhiteboardSchemaVersionError);
+    }
+  });
+
   it('boardFromDoc fails fast when attached to an unreadable (newer) doc', () => {
     const source = createBoard({ clientId: 1 });
     source.addElement(rect('a1'));

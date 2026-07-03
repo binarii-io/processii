@@ -82,21 +82,24 @@ export function mountDocument(options: MountDocumentOptions): MountedDocument {
   });
 
   // Compatibility gate: this engine is created fresh (not via `engineFromDoc`), so the package's
-  // eager check does not run. Once the persisted state (IndexedDB) is applied, refuse a document
-  // written by a newer schema version rather than mis-rendering it.
-  const persistence = session.persistence;
-  if (persistence) {
-    void persistence.whenLoaded().then(() => {
-      try {
-        engine.assertReadable();
-      } catch (error) {
-        if (error instanceof WhiteboardSchemaVersionError) {
-          if (options.onSchemaError) options.onSchemaError(error);
-          else console.error(error.message);
-        }
+  // eager check does not run. Guard EVERY hydration path — local persistence (IndexedDB) **and** a
+  // remote peer's updates over P2P — by re-checking on each document change, and refuse a document
+  // written by a newer schema version rather than mis-rendering it. Fires at most once.
+  let schemaErrorReported = false;
+  const checkSchema = (): void => {
+    if (schemaErrorReported) return;
+    try {
+      engine.assertReadable();
+    } catch (error) {
+      if (error instanceof WhiteboardSchemaVersionError) {
+        schemaErrorReported = true;
+        if (options.onSchemaError) options.onSchemaError(error);
+        else console.error(error.message);
       }
-    });
-  }
+    }
+  };
+  checkSchema(); // initial state (e.g. an already-loaded imported scene)
+  const unobserveSchema = engine.observe(checkSchema);
 
   // Presence: awareness on the board's doc, local identity published right away. Mutable: it is
   // **renewed** on every (re)connection (see `renewAwareness`).
@@ -118,6 +121,7 @@ export function mountDocument(options: MountDocumentOptions): MountedDocument {
       return awareness;
     },
     dispose() {
+      unobserveSchema();
       session.disconnect();
       destroyAwareness(awareness);
     },

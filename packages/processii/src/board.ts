@@ -340,17 +340,31 @@ export class WhiteboardBoard {
    * ("N+1 reads N") and would migrate on read once a future version needs it.
    */
   assertReadable(): void {
-    const found = this.getSchemaVersion();
-    if (found > DOC_SCHEMA_VERSION) {
-      throw new WhiteboardSchemaVersionError(found, DOC_SCHEMA_VERSION);
+    const raw = this.meta.get(SCHEMA_VERSION_KEY);
+    if (raw === undefined) return; // unstamped (legacy or brand-new) → the v1 baseline, readable.
+    // A present marker must be a supported integer version. Anything else — a newer version, or a
+    // malformed/foreign value (non-integer, out of range, non-number) — is REFUSED rather than
+    // optimistically read as v1: the whole point of the gate is "refuse, never mis-read".
+    if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= DOC_SCHEMA_VERSION) {
+      return;
     }
+    throw new WhiteboardSchemaVersionError(
+      typeof raw === 'number' ? raw : Number.NaN,
+      DOC_SCHEMA_VERSION,
+    );
   }
 
   /**
    * Stamps {@link DOC_SCHEMA_VERSION} on first authoring, **only if absent** — a fresh or legacy
-   * (v1, unstamped) doc gets marked without clobbering an existing (possibly newer) version. Runs
-   * in its own transaction under `schemaOrigin`, so the marker is not undoable. Must be called
-   * **before** (never inside) a tracked mutation, else Yjs folds it into `this.origin`.
+   * (v1, unstamped) doc gets marked without clobbering an existing version. Runs in its own
+   * transaction under `schemaOrigin`, so the marker is not undoable. Must be called **before**
+   * (never inside) a tracked mutation, else Yjs folds it into `this.origin`.
+   *
+   * **Ordering caveat:** this writes on user authoring, which always follows hydration
+   * (persistence/peer sync), so it never races an incoming version. A host that instead stamps a
+   * blank doc that may *still* hydrate a **different** (higher) version must do so **after**
+   * hydration — a concurrent same-key write is resolved by Yjs LWW (by client id, not by value),
+   * so an eager local stamp could otherwise clobber a higher persisted version down to v1.
    */
   private ensureSchemaVersion(): void {
     if (this.meta.has(SCHEMA_VERSION_KEY)) return;
@@ -433,8 +447,9 @@ export class WhiteboardBoard {
   }
 
   /**
-   * Replaces the whole content with a scene's (import). Validated element by element. Atomic
-   * (a single transaction) → one CRDT update, one observer notification.
+   * Replaces the whole content with a scene's (import). Validated element by element. The rewrite
+   * is atomic (a single transaction → one CRDT update); on a document's very first authoring it is
+   * preceded by a one-time, separate schema-version stamp (see `ensureSchemaVersion`).
    */
   loadScene(scene: Scene): void {
     this.ensureSchemaVersion();
