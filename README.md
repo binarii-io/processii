@@ -47,4 +47,5 @@ See [`packages/processii/README.md`](packages/processii/README.md) for the full 
 processii was extracted from the memorii monorepo and is now a **standalone project**: this repository is the source of truth. Development happens here through pull requests — `main` is protected and every change needs a green CI. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - License: [Apache-2.0](LICENSE)
-- npm: `@binarii/processii` (publication planned; not yet on the registry)
+- npm: [`@binarii/processii`](https://www.npmjs.com/package/@binarii/processii)
+- The standalone app is continuously deployed to Firebase Hosting from `main` (see `.github/workflows/deploy.yml`)

@@ -1,0 +1,55 @@
+name: Deploy standalone (Firebase Hosting)
+
+# Continuous deployment of the standalone P2P app to Firebase Hosting.
+# Triggers on every main push that can affect the built site, or manually.
+# Prerequisites (repository settings):
+#   - variable FIREBASE_PROJECT_ID (the Firebase project id)
+#   - secret FIREBASE_SERVICE_ACCOUNT_PROCESSII (service account JSON with
+#     Hosting deploy rights — created via `firebase init hosting:github`)
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/processii/**'
+      - 'apps/standalone/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-live
+  cancel-in-progress: false
+
+env:
+  TURBO_TELEMETRY_DISABLED: '1'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (package + standalone app)
+        run: pnpm build
+
+      - name: Deploy to Firebase Hosting (live)
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PROCESSII }}
+          projectId: ${{ vars.FIREBASE_PROJECT_ID }}
+          channelId: live
+          entryPoint: apps/standalone
