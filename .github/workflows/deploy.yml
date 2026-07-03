@@ -18,6 +18,12 @@ on:
       - 'tsconfig.base.json'
       - 'turbo.json'
       - '.github/workflows/deploy.yml'
+      # Docs-only merges must not deploy (CLAUDE.md/AGENTS.md). Exclude markdown
+      # via a trailing negative pattern: GitHub does not allow a separate
+      # `paths-ignore` alongside `paths`, and a later `!` pattern overrides the
+      # earlier positives. A merge touching only *.md files then matches no
+      # remaining path and the workflow does not run.
+      - '!**/*.md'
   workflow_dispatch:
 
 permissions:
