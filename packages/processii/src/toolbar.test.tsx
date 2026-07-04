@@ -120,6 +120,49 @@ describe('Toolbar — process board', () => {
   });
 });
 
+describe('Toolbar — spawn position (issue #13: create at the viewport center)', () => {
+  it('drops a new shape centered on the point returned by getSpawnCenter', () => {
+    const engine = createEngine({ clientId: 1 });
+    // Center of the visible canvas in world coords (e.g. after panning/zooming far from origin).
+    const { getByRole } = render(
+      <Toolbar engine={engine} getSpawnCenter={() => ({ x: 1000, y: 500 })} />,
+    );
+
+    fireEvent.click(getByRole('button', { name: 'Rectangle' }));
+    const rect = engine.listElements().find((e) => e.kind === 'rectangle');
+    // 120×80 rectangle centered on (1000, 500) → top-left = (1000 - 60, 500 - 40).
+    expect(rect).toMatchObject({ x: 940, y: 460, width: 120, height: 80 });
+  });
+
+  it('centers a step on a fractional center, rounding to integer world coords', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { getByRole } = render(
+      <Toolbar engine={engine} getSpawnCenter={() => ({ x: 10.4, y: -5.1 })} />,
+    );
+    fireEvent.click(getByRole('button', { name: 'Étape' }));
+    const step = engine.listElements().find((e) => e.kind === 'step');
+    // 200×120 step centered on (10.4, -5.1) → round(10.4 - 100), round(-5.1 - 60).
+    expect(step).toMatchObject({ x: -90, y: -65, width: 200, height: 120 });
+  });
+
+  it('falls back to the historical fixed position when getSpawnCenter is absent', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { getByRole } = render(<Toolbar engine={engine} />);
+    fireEvent.click(getByRole('button', { name: 'Rectangle' }));
+    expect(engine.listElements().find((e) => e.kind === 'rectangle')).toMatchObject({
+      x: 40,
+      y: 40,
+    });
+  });
+
+  it('falls back to the fixed position when getSpawnCenter returns null (pre-measure)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { getByRole } = render(<Toolbar engine={engine} getSpawnCenter={() => null} />);
+    fireEvent.click(getByRole('button', { name: 'Étape' }));
+    expect(engine.listElements().find((e) => e.kind === 'step')).toMatchObject({ x: 80, y: 80 });
+  });
+});
+
 describe('Toolbar — background color', () => {
   it('the color block changes the board background, and "Par défaut" resets it', async () => {
     const engine = createEngine({ clientId: 1 });

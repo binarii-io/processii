@@ -89,11 +89,13 @@ export {
   clampZoom,
   screenToWorld,
   worldToScreen,
+  viewportCenter,
   panBy,
   zoomAt,
   setZoom,
   type Viewport,
   type Point,
+  type Size,
 } from './viewport.js';
 
 // --- Hit-testing (click / marquee selection) ---

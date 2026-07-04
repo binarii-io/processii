@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useReducer, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { CrdtAwareness, CrdtDoc } from './crdt/index.js';
 import { engineFromDoc, type WhiteboardEngine } from './engine.js';
 import { publishIdentity } from './presence.js';
 import { BoardCanvas } from './board-canvas.js';
 import { SidePanel } from './side-panel.js';
 import { Toolbar } from './toolbar.js';
+import { viewportCenter, type Point, type Size, type Viewport } from './viewport.js';
 
 /**
  * Presence identity of the local collaborator (name + ui-kit token color) — displayed on the
@@ -68,6 +69,22 @@ export function WhiteboardEditor({
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
   const [, forceRender] = useReducer((n: number) => n + 1, 0);
 
+  // Latest local viewport (pan/zoom) + canvas size, mirrored from `BoardCanvas`. Kept in a ref, not
+  // state: it is only read on demand when creating an item, so it must not trigger a re-render (it
+  // changes on every pan/zoom frame). Presentation state — never persisted or shared.
+  const viewRef = useRef<{ viewport: Viewport; size: Size } | null>(null);
+  const handleViewportChange = useCallback((viewport: Viewport, size: Size): void => {
+    viewRef.current = { viewport, size };
+  }, []);
+
+  // World point at the center of the visible canvas (or `null` before the first measure). Passed to
+  // the toolbar so new items spawn where the user is looking, not at a fixed off-screen position.
+  const getSpawnCenter = useCallback(
+    (): Point | null =>
+      viewRef.current ? viewportCenter(viewRef.current.viewport, viewRef.current.size) : null,
+    [],
+  );
+
   // Publishes the local identity (name/color) into the awareness — once per (awareness, collaborator).
   useEffect(() => {
     if (awareness && collaborator) publishIdentity(awareness, collaborator);
@@ -92,6 +109,7 @@ export function WhiteboardEditor({
           {...(awareness ? { awareness } : {})}
           selectedLaneId={selectedLaneId}
           onSelectLane={setSelectedLaneId}
+          onViewportChange={handleViewportChange}
           {...(onNavigateSubprocess ? { onNavigateSubprocess } : {})}
         />
       </div>
@@ -123,6 +141,7 @@ export function WhiteboardEditor({
               engine={engine}
               onChange={forceRender}
               selectionCount={engineSel.length}
+              getSpawnCenter={getSpawnCenter}
               {...(onCreateSubprocess ? { onCreateSubprocess } : {})}
             />
           </div>

@@ -7,6 +7,7 @@ import {
   panBy,
   screenToWorld,
   setZoom,
+  viewportCenter,
   worldToScreen,
   zoomAt,
   type Viewport,
@@ -28,6 +29,24 @@ describe('viewport — world ↔ screen transforms', () => {
   it('applies pan + zoom: screen = world*zoom + (x,y)', () => {
     const vp: Viewport = { x: 100, y: 50, zoom: 2 };
     expect(worldToScreen(vp, { x: 10, y: 10 })).toEqual({ x: 120, y: 70 });
+  });
+});
+
+describe('viewport — center of the visible canvas', () => {
+  it('identity: center is the geometric middle of the canvas', () => {
+    expect(viewportCenter(IDENTITY_VIEWPORT, { width: 800, height: 600 })).toEqual({
+      x: 400,
+      y: 300,
+    });
+  });
+
+  it('follows pan/zoom: the world point under the screen center is returned', () => {
+    const vp: Viewport = { x: 100, y: 50, zoom: 2 };
+    const size = { width: 800, height: 600 };
+    // Same as inverting the screen mid-point through the viewport.
+    expect(viewportCenter(vp, size)).toEqual(screenToWorld(vp, { x: 400, y: 300 }));
+    // A shape centered here lands under the screen center once transformed back.
+    expect(worldToScreen(vp, viewportCenter(vp, size))).toEqual({ x: 400, y: 300 });
   });
 });
 
