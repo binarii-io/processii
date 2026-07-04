@@ -110,8 +110,9 @@ a single top-anchored column (see [Process board](#process-board-process-model))
 doc write**: an unstamped `clusterId` defaults to the constant **`LEGACY_CLUSTER_ID`**, and the one
 synthetic legacy cluster sits at the origin with the old shared `swimlanesWidth` as its width (kept,
 now deprecated). The projection is convergent because the legacy id is a compile-time constant, so
-every peer projects the identical cluster; detach mints deterministic ids (`cluster:<src>:<lane>`)
-for the same reason. A cluster's identity is defined by **lane membership**, not by a map entry (an
+every peer projects the identical cluster; detach mints deterministic ids (`cluster-of:<laneId>` — a
+fixed prefix on the unique lane id, injective and colon-safe) for the same reason. A cluster's
+identity is defined by **lane membership**, not by a map entry (an
 empty cluster is never projected), so structural edits stay convergent. Per the policy above, a v1
 build **refuses** a v2 document (`assertReadable` → `WhiteboardSchemaVersionError`).
 
@@ -176,7 +177,7 @@ updateSwimlaneCluster/removeSwimlaneCluster`). The legacy shared `swimlanesWidth
   **Move / attach / detach.** Lanes and clusters are freely movable with **magnetic** attach/detach:
   - `engine.moveCluster(id, dx, dy)` translates a whole cluster **and its lanes' content** together.
   - `engine.detachSwimlaneTo(id, x, y)` pulls a lane out into its own new cluster (deterministic id
-    `cluster:<src>:<lane>`), carrying its content and reflowing the source.
+    `cluster-of:<laneId>`), carrying its content and reflowing the source.
   - `engine.attachSwimlane(id, targetClusterId, atIndex?)` merges a lane into another cluster,
     adopting its `x`/`width` and closing the gap it leaves.
   - `engine.reorderSwimlane(id, targetIndex)` reorders **within a cluster** (renumbers `order`).
