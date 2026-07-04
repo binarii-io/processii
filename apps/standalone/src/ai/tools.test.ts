@@ -352,7 +352,8 @@ describe('tools — handlers on the engine', () => {
       x: 5000,
       y: 50,
     });
-    expect(engine.getSwimlanesWidth()).toBeGreaterThanOrEqual(5200);
+    // Width now lives in the (legacy) cluster override, not the deprecated shared meta.
+    expect(engine.listSwimlaneClusters()[0]?.width).toBeGreaterThanOrEqual(5200);
   });
 
   it('connectFlow links a sequence of ids in one call (and skips duplicates)', () => {
@@ -499,16 +500,16 @@ describe('tools — lane placement & resizing (#89)', () => {
     expect(schema).toContain('height');
   });
 
-  it('setLanesWidth sets the shared width but does not cut the existing cards', () => {
+  it("setLanesWidth sets the group's width but does not cut the existing cards", () => {
     const { ctx, engine } = ctxWithSeq();
     TOOLS_BY_NAME.get('addSwimlane')!.run(ctx, { id: 'l1', name: 'A' });
     TOOLS_BY_NAME.get('addStep')!.run(ctx, { id: 's1', name: '1', x: 1500, y: 10 }); // far right
     const res = TOOLS_BY_NAME.get('setLanesWidth')!.run(ctx, { width: 300 }); // trop petit
     expect(res.clamped).toBe(true);
-    expect(engine.getSwimlanesWidth()).toBeGreaterThanOrEqual(1500); // no card cut
+    expect(engine.listSwimlaneClusters()[0]?.width).toBeGreaterThanOrEqual(1500); // no card cut
     const res2 = TOOLS_BY_NAME.get('setLanesWidth')!.run(ctx, { width: 4000 });
     expect(res2.clamped).toBe(false);
-    expect(engine.getSwimlanesWidth()).toBe(4000);
+    expect(engine.listSwimlaneClusters()[0]?.width).toBe(4000);
   });
 
   it('tidyLayout grows the too-small lanes and recenters, without shrinking', () => {
@@ -563,6 +564,138 @@ describe('tools — lane reordering (reorderSwimlane)', () => {
     TOOLS_BY_NAME.get('addSwimlane')!.run(ctx, { id: 'l1', name: 'A' });
     expect(() =>
       TOOLS_BY_NAME.get('reorderSwimlane')!.run(ctx, { laneId: 'nope', toIndex: 0 }),
+    ).toThrow();
+  });
+});
+
+describe('tools — swimlane groups (clusters)', () => {
+  it('moveSwimlaneGroup translates the whole group and its cards (group named by a lane)', () => {
+    const { ctx, engine } = ctxWithSeq();
+    TOOLS_BY_NAME.get('addSwimlane')!.run(ctx, { id: 'rh', name: 'RH' });
+    TOOLS_BY_NAME.get('addSwimlane')!.run(ctx, { id: 'mgr', name: 'Manager' });
+    const step = TOOLS_BY_NAME.get('addStep')!.run(ctx, { name: 'Tri', swimlaneId: 'RH' }) as {
+      id: string;
+    };
+    const before = engine.board.getElement(step.id)!;
+
+    const res = TOOLS_BY_NAME.get('moveSwimlaneGroup')!.run(ctx, {
+      laneRef: 'Manager', // any lane of the (legacy) group
+      dx: 150,
+      dy: 40,
+    });
+    expect(res.ok).toBe(true);
+    // The card inside the group followed the whole block.
+    expect(engine.board.getElement(step.id)).toMatchObject({
+      x: before.x + 150,
+      y: before.y + 40,
+    });
+  });
+
+  it('moveSwimlaneGroup accepts an absolute x/y', () => {
+    const { ctx, engine } = ctxWithSeq();
+    TOOLS_BY_NAME.get('addSwimlane')!.run(ctx, { id: 'rh', name: 'RH' });
+    TOOLS_BY_NAME.get('moveSwimlaneGroup')!.run(ctx, { laneRef: 'RH', x: 500, y: 200 });
+    expect(engine.listSwimlaneClusters()[0]).toMatchObject({ x: 500, y: 200 });
+  });
+
+  it('detachSwimlane splits a lane into its own block; attachSwimlane re-snaps it', () => {
+    const { ctx, engine } = ctxWithSeq();
+    TOOLS_BY_NAME.get('addSwimlane')!.run(ctx, { id: 'rh', name: 'RH' });
+    TOOLS_BY_NAME.get('addSwimlane')!.run(ctx, { id: 'mgr', name: 'Manager' });
+
+    const det = TOOLS_BY_NAME.get('detachSwimlane')!.run(ctx, {
+      laneRef: 'Manager',
+      x: 900,
+      y: 300,
+    });
+    expect(det.ok).toBe(true);
+    expect(engine.listSwimlaneClusters()).toHaveLength(2);
+    const mgrCluster = engine.listSwimlanes().find((l) => l.id === 'mgr')?.clusterId;
+    const rhCluster = engine.listSwimlanes().find((l) => l.id === 'rh')?.clusterId;
+    expect(mgrCluster).not.toBe(rhCluster);
+
+    // Re-snap Manager into RH's group.
+    const att = TOOLS_BY_NAME.get('attachSwimlane')!.run(ctx, {
+      laneRef: 'Manager',
+      targetRef: 'RH',
+    });
+    expect(att.ok).toBe(true);
+    expect(engine.listSwimlanes().find((l) => l.id === 'mgr')?.clusterId).toBe(rhCluster);
+    expect(engine.listSwimlaneClusters()).toHaveLength(1);
+  });
+
+  it('refuses an unknown group / lane', () => {
+    const { ctx } = ctxWithSeq();
+    TOOLS_BY_NAME.get('addSwimlane')!.run(ctx, { id: 'rh', name: 'RH' });
+    expect(() =>
+      TOOLS_BY_NAME.get('moveSwimlaneGroup')!.run(ctx, { laneRef: 'nope', dx: 10 }),
+    ).toThrow();
+    expect(() => TOOLS_BY_NAME.get('moveSwimlaneGroup')!.run(ctx, { laneRef: 'RH' })).toThrow(); // no dx/dy/x/y
+    expect(() =>
+      TOOLS_BY_NAME.get('detachSwimlane')!.run(ctx, { laneRef: 'nope', x: 0, y: 0 }),
+    ).toThrow();
+  });
+
+  it('moveSwimlaneGroup reports a zero-delta target as already-in-place (ok, not a failure)', () => {
+    const { ctx, engine } = ctxWithSeq();
+    engine.addSwimlane({ id: 'a', clusterId: 'A', name: 'A', order: 0, height: 100 });
+    engine.addSwimlaneCluster({ id: 'A', x: 500, y: 200, width: 400 });
+    const res = TOOLS_BY_NAME.get('moveSwimlaneGroup')!.run(ctx, { laneRef: 'A', x: 500, y: 200 });
+    expect(res.ok).toBe(true);
+    expect(res.x).toBe(500);
+    expect(res.y).toBe(200);
+  });
+});
+
+describe('tools — cluster-aware placement, width & reorder', () => {
+  it('addStep places a card within its lane’s cluster (x aligned to the cluster, not global 0)', () => {
+    const { ctx, engine } = ctxWithSeq();
+    engine.addSwimlane({ id: 'r', clusterId: 'R', name: 'Right', order: 0, height: 160 });
+    engine.addSwimlaneCluster({ id: 'R', x: 1000, y: 0, width: 600 });
+    const res = TOOLS_BY_NAME.get('addStep')!.run(ctx, { name: 'A', swimlaneId: 'r' }) as {
+      id: string;
+    };
+    const el = engine.board.getElement(res.id)!;
+    expect(el.x).toBeGreaterThanOrEqual(1000); // inside the cluster's x-range, not near global 0
+  });
+
+  it('addStep widens the RIGHT cluster (its own override) to contain a far card', () => {
+    const { ctx, engine } = ctxWithSeq();
+    engine.addSwimlane({ id: 'r', clusterId: 'R', name: 'Right', order: 0, height: 160 });
+    engine.addSwimlaneCluster({ id: 'R', x: 1000, y: 0, width: 200 });
+    TOOLS_BY_NAME.get('addStep')!.run(ctx, { id: 's', name: 'A', swimlaneId: 'r', x: 1800, y: 20 });
+    // Needed = 1800 + 200 (step) − 1000 (cluster x) + 120 = 1120 → the R cluster grew.
+    expect(engine.getSwimlaneCluster('R')!.width).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('setLanesWidth targets a group by laneRef and leaves the others untouched', () => {
+    const { ctx, engine } = ctxWithSeq();
+    engine.addSwimlane({ id: 'a', clusterId: 'A', name: 'A', order: 0, height: 160 });
+    engine.addSwimlane({ id: 'b', clusterId: 'B', name: 'B', order: 0, height: 160 });
+    engine.addSwimlaneCluster({ id: 'A', x: 0, y: 0, width: 400 });
+    engine.addSwimlaneCluster({ id: 'B', x: 900, y: 0, width: 400 });
+    TOOLS_BY_NAME.get('setLanesWidth')!.run(ctx, { width: 700, laneRef: 'B' });
+    expect(engine.getSwimlaneCluster('B')!.width).toBe(700);
+    expect(engine.getSwimlaneCluster('A')!.width).toBe(400);
+  });
+
+  it('reorderSwimlane is scoped to the lane’s group; a cross-group ref errors', () => {
+    const { ctx, engine } = ctxWithSeq();
+    engine.addSwimlane({ id: 'a1', clusterId: 'A', name: 'A1', order: 0, height: 100 });
+    engine.addSwimlane({ id: 'a2', clusterId: 'A', name: 'A2', order: 1, height: 100 });
+    engine.addSwimlane({ id: 'b1', clusterId: 'B', name: 'B1', order: 0, height: 100 });
+    engine.addSwimlaneCluster({ id: 'A', x: 0, y: 0, width: 400 });
+    engine.addSwimlaneCluster({ id: 'B', x: 900, y: 0, width: 400 });
+    TOOLS_BY_NAME.get('reorderSwimlane')!.run(ctx, { laneId: 'A1', after: 'A2' });
+    expect(
+      engine
+        .listSwimlanes()
+        .filter((l) => l.clusterId === 'A')
+        .map((l) => l.id),
+    ).toEqual(['a2', 'a1']);
+    // Cross-group ref → error (points to attachSwimlane).
+    expect(() =>
+      TOOLS_BY_NAME.get('reorderSwimlane')!.run(ctx, { laneId: 'A1', before: 'B1' }),
     ).toThrow();
   });
 });

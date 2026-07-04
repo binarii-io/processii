@@ -14,7 +14,14 @@
 import { boardFromDoc, createBoard, WhiteboardBoard, type ElementPatch } from './board.js';
 import type { CrdtDoc } from './crdt/index.js';
 import type { CreateDocOptions } from './crdt/index.js';
-import type { AgentGroup, ConnectorSide, Scene, Swimlane, WhiteboardElement } from './scene.js';
+import type {
+  AgentGroup,
+  ConnectorSide,
+  Scene,
+  Swimlane,
+  SwimlaneCluster,
+  WhiteboardElement,
+} from './scene.js';
 import type { WhiteboardHistory } from './history.js';
 import { connectorGeometry } from './connector.js';
 
@@ -24,6 +31,38 @@ export interface BoundingBox {
   readonly y: number;
   readonly width: number;
   readonly height: number;
+}
+
+/**
+ * Absolute world band of each lane, stacked **per cluster** from its (`x`, `y`) by ascending
+ * `order`. Pure: used both for the live geometry (`this.clusterMap()`) and to simulate a proposed
+ * layout (reorder/move/attach/detach) so element deltas can be computed before writing. A lane
+ * whose cluster is absent from `clusters` falls back to origin with `fallbackWidth`.
+ */
+function stackBands(
+  lanes: readonly Swimlane[],
+  clusters: ReadonlyMap<string, { x: number; y: number; width: number }>,
+  fallbackWidth: number,
+): Map<string, BoundingBox> {
+  const byCluster = new Map<string, Swimlane[]>();
+  for (const lane of lanes) {
+    const list = byCluster.get(lane.clusterId);
+    if (list) list.push(lane);
+    else byCluster.set(lane.clusterId, [lane]);
+  }
+  const out = new Map<string, BoundingBox>();
+  for (const [clusterId, list] of byCluster) {
+    const cluster = clusters.get(clusterId);
+    const x = cluster?.x ?? 0;
+    const width = cluster?.width ?? fallbackWidth;
+    let top = cluster?.y ?? 0;
+    const sorted = [...list].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+    for (const lane of sorted) {
+      out.set(lane.id, { x, y: top, width, height: lane.height });
+      top += lane.height;
+    }
+  }
+  return out;
 }
 
 export class WhiteboardEngine {
@@ -233,68 +272,265 @@ export class WhiteboardEngine {
   listSwimlanes(): Swimlane[] {
     return this.board.listSwimlanes();
   }
+
+  // --- swimlane clusters (v2: freely-positioned aligned lane blocks) ---
+
+  /** Clusters referenced by ≥1 lane, with their (stored or synthesized) position/size. */
+  listSwimlaneClusters(): SwimlaneCluster[] {
+    return this.board.listSwimlaneClusters();
+  }
+  /** A referenced cluster, or `undefined`. */
+  getSwimlaneCluster(id: string): SwimlaneCluster | undefined {
+    return this.board.getSwimlaneCluster(id);
+  }
+  /** Writes a cluster override (existence still requires a lane referencing it). */
+  addSwimlaneCluster(input: unknown): SwimlaneCluster {
+    return this.board.addSwimlaneCluster(input);
+  }
+  /** Patches a cluster's position/size (materializes a synthesized cluster on first write). */
+  updateSwimlaneCluster(id: string, patch: Partial<Omit<SwimlaneCluster, 'id'>>): boolean {
+    return this.board.updateSwimlaneCluster(id, patch);
+  }
+  /** Removes a cluster override (a still-referenced cluster reverts to the synthesized default). */
+  removeSwimlaneCluster(id: string): boolean {
+    return this.board.removeSwimlaneCluster(id);
+  }
+
+  /** Current clusters keyed by id (for local geometry simulation). */
+  private clusterMap(): Map<string, SwimlaneCluster> {
+    return new Map(this.listSwimlaneClusters().map((c) => [c.id, c]));
+  }
+
   /**
-   * **Reorders** a lane to the target index (0-based, final position in the list sorted by `order`).
-   * Renumbers the `order` field of every lane (`0..n-1`) **and moves the cards with their lane**:
-   * each attached step (`swimlaneId`) is shifted in `y` by the change of its lane's **top**, so it
-   * visually stays inside (dragging a lane = its content comes along). Re-routes the connectors.
-   * No-op `false` if the id is unknown or the final index is unchanged.
+   * Shifts every non-connector element by the delta of its owning lane's band (before → after).
+   * Membership is decided ONCE from the before-bands (element center inside a band). This is the
+   * single "content follows its lane" primitive shared by reorder/move/attach/detach.
    */
-  reorderSwimlane(id: string, targetIndex: number): boolean {
-    const lanes = this.listSwimlanes(); // sorted by `order`
-    const from = lanes.findIndex((l) => l.id === id);
-    if (from === -1) return false;
-    const to = Math.max(0, Math.min(targetIndex, lanes.length - 1));
-    if (to === from) return false;
-
-    // Top of each lane BEFORE (sum of the heights above), to measure the card offset.
-    const topBefore = new Map<string, number>();
-    let acc = 0;
-    for (const l of lanes) {
-      topBefore.set(l.id, acc);
-      acc += l.height;
-    }
-
-    // New order: remove the dragged lane then reinsert it at the target index.
-    const reordered = [...lanes];
-    const [moved] = reordered.splice(from, 1);
-    reordered.splice(to, 0, moved!);
-
-    // Renumbers `order` (0..n-1) and records the new top of each lane.
-    const topAfter = new Map<string, number>();
-    acc = 0;
-    for (let i = 0; i < reordered.length; i += 1) {
-      const l = reordered[i]!;
-      topAfter.set(l.id, acc);
-      acc += l.height;
-      if (l.order !== i) this.board.updateSwimlane(l.id, { order: i });
-    }
-
-    // Carries each lane's **content**, by **geometry**: any non-connector element whose CENTER
-    // falls inside a lane follows that lane (shifted by the top delta). We do NOT restrict to
-    // steps "attached" (`swimlaneId`) — a card simply **dropped/moved by hand** into a lane
-    // (without swimlaneId) must follow too. Membership uses EXACTLY the `laneAtPoint`
-    // semantics: center vertically inside the lane **AND** `x ∈ [0, shared width]` — an element
-    // horizontally outside the lanes "belongs" to none and must not be moved. Connectors do not
-    // move here: they re-route via `refreshConnectors` according to their endpoints.
-    const width = this.getSwimlanesWidth();
-    const laneAtCenter = (cx: number, cy: number): string | undefined => {
-      if (cx < 0 || cx > width) return undefined; // outside the lanes' width → no lane
-      for (const l of lanes) {
-        const t = topBefore.get(l.id)!;
-        if (cy >= t && cy < t + l.height) return l.id;
-      }
-      return undefined;
-    };
+  private shiftContentByLaneDelta(
+    before: ReadonlyMap<string, BoundingBox>,
+    after: ReadonlyMap<string, BoundingBox>,
+  ): void {
     for (const el of this.listElements()) {
       if (el.kind === 'arrow' || el.kind === 'line') continue;
-      const inLane = laneAtCenter(el.x + el.width / 2, el.y + el.height / 2);
-      if (inLane === undefined) continue;
-      const dy = (topAfter.get(inLane) ?? 0) - (topBefore.get(inLane) ?? 0);
-      if (dy !== 0) this.board.updateElement(el.id, { y: el.y + dy });
+      const cx = el.x + el.width / 2;
+      const cy = el.y + el.height / 2;
+      // Clusters are freely positioned and can overlap, so a center may fall in several bands. An
+      // explicit `swimlaneId` assignment wins over raw geometry; otherwise the first match is kept.
+      const assigned = el.kind === 'step' ? el.swimlaneId : undefined;
+      let owner: string | undefined;
+      let fallback: string | undefined;
+      for (const [id, b] of before) {
+        if (cx >= b.x && cx <= b.x + b.width && cy >= b.y && cy < b.y + b.height) {
+          if (id === assigned) {
+            owner = id;
+            break;
+          }
+          if (fallback === undefined) fallback = id;
+        }
+      }
+      owner = owner ?? fallback;
+      if (owner === undefined) continue;
+      const a = after.get(owner);
+      const b0 = before.get(owner)!;
+      if (!a) continue;
+      const dx = a.x - b0.x;
+      const dy = a.y - b0.y;
+      if (dx !== 0 || dy !== 0) this.board.updateElement(el.id, { x: el.x + dx, y: el.y + dy });
     }
+  }
 
-    this.refreshConnectors();
+  /** Writes the `clusterId`/`order` diffs of `after` vs `before` (no-op when unchanged). */
+  private applyLaneAssignments(after: readonly Swimlane[], before: readonly Swimlane[]): void {
+    const byId = new Map(before.map((l) => [l.id, l]));
+    for (const lane of after) {
+      const prev = byId.get(lane.id);
+      if (!prev) continue;
+      const patch: Partial<Omit<Swimlane, 'id'>> = {};
+      if (lane.clusterId !== prev.clusterId) patch.clusterId = lane.clusterId;
+      if (lane.order !== prev.order) patch.order = lane.order;
+      if (Object.keys(patch).length > 0) this.board.updateSwimlane(lane.id, patch);
+    }
+  }
+
+  /**
+   * **Atomically** commits a lane reassignment (attach/detach share this): optional new cluster
+   * override, the lane `clusterId`/`order` diffs, the content shift, an optional empty-source
+   * cluster cleanup, and connector re-routing — all in ONE transaction so a peer can never observe
+   * the lane pointing at a cluster whose override write hasn't landed yet.
+   */
+  private commitReassign(
+    before: ReadonlyMap<string, BoundingBox>,
+    after: ReadonlyMap<string, BoundingBox>,
+    afterLanes: readonly Swimlane[],
+    lanes: readonly Swimlane[],
+    opts: { addCluster?: SwimlaneCluster; removeEmptyCluster?: string } = {},
+  ): void {
+    this.board.transact(() => {
+      if (opts.addCluster) this.board.addSwimlaneCluster(opts.addCluster);
+      this.applyLaneAssignments(afterLanes, lanes);
+      this.shiftContentByLaneDelta(before, after);
+      // Drop a now-empty source override (identity is lane membership; an empty cluster is dead).
+      if (
+        opts.removeEmptyCluster !== undefined &&
+        !afterLanes.some((l) => l.clusterId === opts.removeEmptyCluster)
+      ) {
+        this.board.removeSwimlaneCluster(opts.removeEmptyCluster);
+      }
+      this.refreshConnectors();
+    });
+  }
+
+  /**
+   * Reassigns `laneId` to `targetClusterId` at `atIndex` (default: appended), returning the FULL
+   * lane list with both the source and target clusters renumbered contiguously (0..n-1). Pure.
+   */
+  private reassignLanes(
+    lanes: readonly Swimlane[],
+    laneId: string,
+    targetClusterId: string,
+    atIndex?: number,
+  ): Swimlane[] {
+    const moved = lanes.find((l) => l.id === laneId);
+    if (!moved) return [...lanes];
+    const sourceId = moved.clusterId;
+    const byOrder = (a: Swimlane, b: Swimlane): number =>
+      a.order - b.order || a.id.localeCompare(b.id);
+    const targetLanes = lanes
+      .filter((l) => l.clusterId === targetClusterId && l.id !== laneId)
+      .sort(byOrder);
+    const insertAt = Math.max(0, Math.min(atIndex ?? targetLanes.length, targetLanes.length));
+    const newTarget = [...targetLanes];
+    newTarget.splice(insertAt, 0, moved);
+    const sourceLanes = lanes
+      .filter((l) => l.clusterId === sourceId && l.id !== laneId)
+      .sort(byOrder);
+    const assign = new Map<string, { clusterId: string; order: number }>();
+    newTarget.forEach((l, i) => assign.set(l.id, { clusterId: targetClusterId, order: i }));
+    if (sourceId !== targetClusterId)
+      sourceLanes.forEach((l, i) => assign.set(l.id, { clusterId: sourceId, order: i }));
+    return lanes.map((l) => {
+      const a = assign.get(l.id);
+      return a ? { ...l, clusterId: a.clusterId, order: a.order } : l;
+    });
+  }
+
+  /**
+   * **Reorders** a lane to `targetIndex` **within its own cluster** (0-based). Renumbers that
+   * cluster's `order` (0..n-1) and shifts each lane's content by its band-top change (content
+   * follows its lane, by geometry — `swimlaneId` not required). Re-routes connectors. No-op
+   * `false` if the id is unknown or the index is unchanged.
+   */
+  reorderSwimlane(id: string, targetIndex: number): boolean {
+    const lanes = this.listSwimlanes();
+    const lane = lanes.find((l) => l.id === id);
+    if (!lane) return false;
+    const clusterLanes = lanes.filter((l) => l.clusterId === lane.clusterId);
+    const from = clusterLanes.findIndex((l) => l.id === id);
+    const to = Math.max(0, Math.min(targetIndex, clusterLanes.length - 1));
+    if (to === from) return false;
+
+    const clusters = this.clusterMap();
+    const width = this.getSwimlanesWidth();
+    const before = stackBands(lanes, clusters, width);
+
+    const reordered = [...clusterLanes];
+    const [moved] = reordered.splice(from, 1);
+    reordered.splice(to, 0, moved!);
+    const newOrder = new Map(reordered.map((l, i) => [l.id, i]));
+    const afterLanes = lanes.map((l) =>
+      newOrder.has(l.id) ? { ...l, order: newOrder.get(l.id)! } : l,
+    );
+    const after = stackBands(afterLanes, clusters, width);
+
+    this.board.transact(() => {
+      reordered.forEach((l, i) => {
+        if (l.order !== i) this.board.updateSwimlane(l.id, { order: i });
+      });
+      this.shiftContentByLaneDelta(before, after);
+      this.refreshConnectors();
+    });
+    return true;
+  }
+
+  /**
+   * Translates a whole cluster (its position + the content of every lane in it) by (dx, dy).
+   * No-op `false` when the cluster is unknown or the delta is zero.
+   */
+  moveCluster(clusterId: string, dx: number, dy: number): boolean {
+    const clusters = this.clusterMap();
+    const cluster = clusters.get(clusterId);
+    if (!cluster || (dx === 0 && dy === 0)) return false;
+    const lanes = this.listSwimlanes();
+    const width = this.getSwimlanesWidth();
+    const before = stackBands(lanes, clusters, width);
+    const afterClusters = new Map(clusters);
+    afterClusters.set(clusterId, { ...cluster, x: cluster.x + dx, y: cluster.y + dy });
+    const after = stackBands(lanes, afterClusters, width);
+
+    this.board.transact(() => {
+      this.board.updateSwimlaneCluster(clusterId, { x: cluster.x + dx, y: cluster.y + dy });
+      this.shiftContentByLaneDelta(before, after);
+      this.refreshConnectors();
+    });
+    return true;
+  }
+
+  /**
+   * **Attaches** a lane into `targetClusterId` at `atIndex` (default: appended at the bottom). The
+   * lane adopts the target cluster's `x`/`width`; its content travels to the new band; the target
+   * `order` is renumbered to make room and the source cluster is reflowed (its content shifts up to
+   * close the gap). Same-cluster call with an index degrades to `reorderSwimlane`. No-op `false`
+   * when the lane or target cluster is unknown.
+   */
+  attachSwimlane(laneId: string, targetClusterId: string, atIndex?: number): boolean {
+    const lanes = this.listSwimlanes();
+    const lane = lanes.find((l) => l.id === laneId);
+    if (!lane) return false;
+    if (lane.clusterId === targetClusterId)
+      return atIndex === undefined ? false : this.reorderSwimlane(laneId, atIndex);
+    const clusters = this.clusterMap();
+    if (!clusters.has(targetClusterId)) return false;
+    const width = this.getSwimlanesWidth();
+    const sourceId = lane.clusterId;
+
+    const before = stackBands(lanes, clusters, width);
+    const afterLanes = this.reassignLanes(lanes, laneId, targetClusterId, atIndex);
+    const after = stackBands(afterLanes, clusters, width);
+
+    this.commitReassign(before, after, afterLanes, lanes, { removeEmptyCluster: sourceId });
+    return true;
+  }
+
+  /**
+   * **Detaches** a lane into its own new cluster positioned at (x, y). The new cluster id is
+   * DETERMINISTIC and **injective** in the lane (`cluster-of:<laneId>`) — a fixed prefix on the
+   * unique lane id, so two peers detaching the same lane converge on the same id (no orphan) and
+   * distinct lanes never collide (unlike a `<source>:<lane>` join, where colons in the source id
+   * make the mapping ambiguous). The lane adopts the source cluster's width; its content travels
+   * with it; the source cluster is reflowed. No-op `false` if the lane is unknown or is already
+   * alone in its cluster. Whole op is one atomic transaction.
+   */
+  detachSwimlaneTo(laneId: string, x: number, y: number): boolean {
+    const lanes = this.listSwimlanes();
+    const lane = lanes.find((l) => l.id === laneId);
+    if (!lane) return false;
+    const sourceId = lane.clusterId;
+    if (lanes.filter((l) => l.clusterId === sourceId).length <= 1) return false; // already alone
+    const newClusterId = `cluster-of:${laneId}`;
+    if (newClusterId === sourceId) return false;
+    const clusters = this.clusterMap();
+    const width = this.getSwimlanesWidth();
+    const laneWidth = clusters.get(sourceId)?.width ?? width;
+
+    const before = stackBands(lanes, clusters, width);
+    const afterLanes = this.reassignLanes(lanes, laneId, newClusterId, 0);
+    const afterClusters = new Map(clusters);
+    afterClusters.set(newClusterId, { id: newClusterId, x, y, width: laneWidth });
+    const after = stackBands(afterLanes, afterClusters, width);
+
+    this.commitReassign(before, after, afterLanes, lanes, {
+      addCluster: { id: newClusterId, x, y, width: laneWidth },
+    });
     return true;
   }
   getSwimlanesWidth(): number {
@@ -330,85 +566,111 @@ export class WhiteboardEngine {
   assertReadable(): void {
     this.board.assertReadable();
   }
-  /** Id of the swimlane under the **world** point, or `undefined`. Stacked by `order`. */
+  /**
+   * Absolute world band of every lane, stacked **per cluster** from its (`x`, `y`). The single
+   * source of truth for all lane geometry (hit-test, edges, header, render). Computed on demand.
+   */
+  private laneBands(): Map<string, BoundingBox> {
+    // Fetch the lanes ONCE and thread them into the cluster projection (which would otherwise
+    // re-read + re-parse the whole lane collection) — this is the hottest geometry call.
+    const lanes = this.listSwimlanes();
+    const clusters = new Map(this.board.listSwimlaneClusters(lanes).map((c) => [c.id, c]));
+    return stackBands(lanes, clusters, this.getSwimlanesWidth());
+  }
+
+  /** Id of the swimlane under the **world** point, or `undefined`. */
   laneAtPoint(p: { x: number; y: number }): string | undefined {
-    const width = this.getSwimlanesWidth();
-    if (p.x < 0 || p.x > width) return undefined;
-    let top = 0;
-    for (const lane of this.listSwimlanes()) {
-      if (p.y >= top && p.y < top + lane.height) return lane.id;
-      top += lane.height;
+    for (const [id, b] of this.laneBands()) {
+      if (p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y < b.y + b.height) return id;
     }
     return undefined;
   }
 
   /**
-   * Swimlane bounding boxes (each lane = `{ x:0, y, width: shared width, height }`).
+   * Swimlane bounding boxes (per-cluster positioned `{ x, y, width, height }`).
    * Used as **snapping/alignment targets**: a moved element can snap to the top/center/bottom
    * and the left/right edge of a lane, in addition to the other elements.
    */
   swimlaneBounds(): BoundingBox[] {
-    const width = this.getSwimlanesWidth();
-    let top = 0;
-    const out: BoundingBox[] = [];
-    for (const lane of this.listSwimlanes()) {
-      out.push({ x: 0, y: top, width, height: lane.height });
-      top += lane.height;
-    }
-    return out;
+    return [...this.laneBands().values()];
   }
 
-  /** World ordinate of the top of swimlane `id` (sum of the heights of the lanes above). */
+  /** World band (rect) of swimlane `id`, or `undefined`. */
+  laneBand(id: string): BoundingBox | undefined {
+    return this.laneBands().get(id);
+  }
+
+  /** World ordinate of the top of swimlane `id` (its cluster's y + the lanes above it). */
   laneTop(id: string): number {
-    let top = 0;
+    return this.laneBands().get(id)?.y ?? 0;
+  }
+
+  /** Overall rect of each cluster (its `x`/`width` and the vertical span of its lanes). */
+  clusterBounds(): { cluster: SwimlaneCluster; bounds: BoundingBox }[] {
+    const bands = this.laneBands();
+    const lanesByCluster = new Map<string, string[]>();
     for (const lane of this.listSwimlanes()) {
-      if (lane.id === id) return top;
-      top += lane.height;
+      const list = lanesByCluster.get(lane.clusterId);
+      if (list) list.push(lane.id);
+      else lanesByCluster.set(lane.clusterId, [lane.id]);
     }
-    return top;
+    const out: { cluster: SwimlaneCluster; bounds: BoundingBox }[] = [];
+    for (const cluster of this.listSwimlaneClusters()) {
+      const ids = lanesByCluster.get(cluster.id) ?? [];
+      const rects = ids.map((id) => bands.get(id)).filter((b): b is BoundingBox => b !== undefined);
+      if (rects.length === 0) continue;
+      const yTop = Math.min(...rects.map((b) => b.y));
+      const yBot = Math.max(...rects.map((b) => b.y + b.height));
+      out.push({
+        cluster,
+        bounds: { x: cluster.x, y: yTop, width: cluster.width, height: yBot - yTop },
+      });
+    }
+    return out;
   }
 
   /**
    * Swimlane edge under the world point (mouse-resize handle):
    * - `{ laneId, edge: 'bottom' }`: bottom edge of a lane → resizes its **height**;
-   * - `{ edge: 'right' }`: shared right edge → resizes the **width** of all lanes.
+   * - `{ clusterId, edge: 'right' }`: a cluster's right edge → resizes **that cluster's** width.
    * `tolerance` in world units (typically a few screen px / zoom).
    */
   laneEdgeAtPoint(
     p: { x: number; y: number },
     tolerance = 6,
-  ): { laneId?: string; edge: 'bottom' | 'right' } | undefined {
-    const lanes = this.listSwimlanes();
-    if (lanes.length === 0) return undefined;
-    const width = this.getSwimlanesWidth();
-    let top = 0;
-    let total = 0;
-    for (const lane of lanes) total += lane.height;
-    for (const lane of lanes) {
-      const bottom = top + lane.height;
-      if (Math.abs(p.y - bottom) <= tolerance && p.x >= 0 && p.x <= width) {
-        return { laneId: lane.id, edge: 'bottom' };
+  ): { laneId?: string; clusterId?: string; edge: 'bottom' | 'right' } | undefined {
+    const bands = this.laneBands();
+    for (const [id, b] of bands) {
+      const bottom = b.y + b.height;
+      if (Math.abs(p.y - bottom) <= tolerance && p.x >= b.x && p.x <= b.x + b.width) {
+        return { laneId: id, edge: 'bottom' };
       }
-      top += lane.height;
     }
-    if (Math.abs(p.x - width) <= tolerance && p.y >= 0 && p.y <= total) return { edge: 'right' };
+    for (const { cluster, bounds } of this.clusterBounds()) {
+      const right = cluster.x + cluster.width;
+      if (
+        Math.abs(p.x - right) <= tolerance &&
+        p.y >= bounds.y &&
+        p.y <= bounds.y + bounds.height
+      ) {
+        return { clusterId: cluster.id, edge: 'right' };
+      }
+    }
     return undefined;
   }
 
   /**
    * Id of the swimlane whose **header** (top-left corner) is under the world point — used to
-   * select a lane without capturing its whole background (marquee stays possible elsewhere).
+   * select/drag a lane without capturing its whole background (marquee stays possible elsewhere).
    */
   laneHeaderAtPoint(
     p: { x: number; y: number },
     headerWidth = 180,
     headerHeight = 28,
   ): string | undefined {
-    if (p.x < 0 || p.x > headerWidth) return undefined;
-    let top = 0;
-    for (const lane of this.listSwimlanes()) {
-      if (p.y >= top && p.y < top + headerHeight) return lane.id;
-      top += lane.height;
+    for (const [id, b] of this.laneBands()) {
+      if (p.x >= b.x && p.x <= b.x + headerWidth && p.y >= b.y && p.y < b.y + headerHeight)
+        return id;
     }
     return undefined;
   }
@@ -468,13 +730,11 @@ export class WhiteboardEngine {
     const elements = this.listElements();
     const boundsById = new Map(elements.map((e) => [e.id, elementBounds(e)]));
 
-    // Stacked swimlanes: cumulative y following the order; shared width.
-    const width = this.getSwimlanesWidth();
-    let top = 0;
+    // Swimlanes: each positioned by its cluster (x, y) and stacked within it.
+    const bands = this.laneBands();
     const swimlanes = this.listSwimlanes().map((lane) => {
-      const y = top;
-      top += lane.height;
-      return { lane, y, width };
+      const b = bands.get(lane.id);
+      return { lane, x: b?.x ?? 0, y: b?.y ?? 0, width: b?.width ?? this.getSwimlanesWidth() };
     });
 
     // Groups: bounding box enclosing the member steps + margin.
@@ -522,9 +782,10 @@ export interface RenderItem {
   readonly bounds: BoundingBox;
 }
 
-/** Swimlane positioned for rendering (cumulative y + shared width). */
+/** Swimlane positioned for rendering (its cluster's `x`/`width`, stacked `y`). */
 export interface RenderSwimlane {
   readonly lane: Swimlane;
+  readonly x: number;
   readonly y: number;
   readonly width: number;
 }

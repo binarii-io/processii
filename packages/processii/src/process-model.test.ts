@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createEngine } from './engine.js';
-import { parseElement, parseScene, type Scene } from './scene.js';
+import { LEGACY_CLUSTER_ID, parseElement, parseScene, type Scene } from './scene.js';
 
 /**
  * "Process board" model (B1): rich `step` node + swimlanes/agentGroups collections, carried by
@@ -73,8 +73,11 @@ describe('board — swimlanes', () => {
     expect(engine.laneTop('l2')).toBe(100);
     // Bottom edge of l1 at y=100.
     expect(engine.laneEdgeAtPoint({ x: 50, y: 100 }, 6)).toEqual({ laneId: 'l1', edge: 'bottom' });
-    // Shared right edge at x = width (default 2000).
-    expect(engine.laneEdgeAtPoint({ x: 2000, y: 50 }, 6)).toEqual({ edge: 'right' });
+    // Cluster right edge at x = width (default 2000) → carries the (legacy) cluster id.
+    expect(engine.laneEdgeAtPoint({ x: 2000, y: 50 }, 6)).toEqual({
+      clusterId: LEGACY_CLUSTER_ID,
+      edge: 'right',
+    });
     // Far from any edge → undefined.
     expect(engine.laneEdgeAtPoint({ x: 500, y: 40 }, 6)).toBeUndefined();
   });

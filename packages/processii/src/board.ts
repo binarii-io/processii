@@ -19,6 +19,7 @@ import {
   DEFAULT_SWIMLANES_WIDTH,
   elementSchema,
   parseElement,
+  swimlaneClusterSchema,
   swimlaneSchema,
   WhiteboardSchemaVersionError,
   type AgentGroup,
@@ -26,6 +27,7 @@ import {
   type Scene,
   type StepEmotion,
   type Swimlane,
+  type SwimlaneCluster,
   type WhiteboardElement,
 } from './scene.js';
 import { wrapUndoManager, type WhiteboardHistory } from './history.js';
@@ -33,9 +35,10 @@ import { wrapUndoManager, type WhiteboardHistory } from './history.js';
 /** Keys of the process board collections inside the Y.Doc. */
 const ELEMENTS_KEY = 'whiteboard:elements';
 const SWIMLANES_KEY = 'whiteboard:swimlanes';
+const SWIMLANE_CLUSTERS_KEY = 'whiteboard:swimlaneClusters';
 const AGENT_GROUPS_KEY = 'whiteboard:agentGroups';
 const META_KEY = 'whiteboard:meta';
-/** Key of the shared swimlane width inside the meta map. */
+/** Key of the shared swimlane width inside the meta map (legacy cluster width; see v2 migration). */
 const SWIMLANES_WIDTH_KEY = 'swimlanesWidth';
 /** Key of the shared document name inside the meta map (synced in collab, e.g. for a guest). */
 const DOC_NAME_KEY = 'docName';
@@ -50,8 +53,14 @@ const SCHEMA_VERSION_KEY = 'schemaVersion';
  * element `kind`, a changed literal); additive field changes are already tolerated on read and do
  * NOT bump it. Distinct from `sceneSchema.version` (the exported `Scene`/bundle JSON version).
  * See the README "Document format & compatibility" section and `WhiteboardBoard.assertReadable`.
+ *
+ * **v2** introduces swimlane **clusters** ({@link SWIMLANE_CLUSTERS_KEY}): lanes gain a `clusterId`
+ * and stack per freely-positioned cluster instead of a single top-anchored column. A v1 doc is
+ * migrated **on read** (projection: unstamped `clusterId` → {@link LEGACY_CLUSTER_ID}, one
+ * synthetic cluster at origin with the old shared width) — no doc mutation. An older (v1) build
+ * refuses a v2 doc via `assertReadable`.
  */
-export const DOC_SCHEMA_VERSION = 1;
+export const DOC_SCHEMA_VERSION = 2;
 
 /** Numeric or textual geometry/style fields stored flat in an element's Y.Map. */
 type ElementRecord = Record<string, unknown>;
@@ -114,6 +123,8 @@ export class WhiteboardBoard {
   readonly doc: CrdtDoc;
   private readonly elements: Y.Map<Y.Map<unknown>>;
   private readonly swimlanes: Y.Map<Y.Map<unknown>>;
+  /** Position/size **overrides** of swimlane clusters (identity itself comes from lane membership). */
+  private readonly clusters: Y.Map<Y.Map<unknown>>;
   private readonly agentGroups: Y.Map<Y.Map<unknown>>;
   private readonly meta: Y.Map<unknown>;
   /**
@@ -131,6 +142,7 @@ export class WhiteboardBoard {
     this.doc = doc;
     this.elements = doc.getMap<Y.Map<unknown>>(ELEMENTS_KEY);
     this.swimlanes = doc.getMap<Y.Map<unknown>>(SWIMLANES_KEY);
+    this.clusters = doc.getMap<Y.Map<unknown>>(SWIMLANE_CLUSTERS_KEY);
     this.agentGroups = doc.getMap<Y.Map<unknown>>(AGENT_GROUPS_KEY);
     this.meta = doc.getMap<unknown>(META_KEY);
   }
@@ -142,10 +154,22 @@ export class WhiteboardBoard {
    */
   createHistory(): WhiteboardHistory {
     const manager = new Y.UndoManager(
-      [this.elements, this.swimlanes, this.agentGroups, this.meta],
+      [this.elements, this.swimlanes, this.clusters, this.agentGroups, this.meta],
       { trackedOrigins: new Set([this.origin]) },
     );
     return wrapUndoManager(manager);
+  }
+
+  /**
+   * Runs `fn` as a **single** transaction under the board's local origin, so a multi-write
+   * operation (e.g. detach = add cluster + reassign lane + shift content) emits **one** CRDT update
+   * and one undo step. The individual write helpers (`updateSwimlane`, `updateElement`, …) each open
+   * `this.doc.transact` too, but Yjs flattens nested transactions into the outer one, so calling
+   * them inside `fn` stays atomic. Callers should do the pure reads BEFORE `transact` and only the
+   * mutations inside it.
+   */
+  transact(fn: () => void): void {
+    this.doc.transact(fn, this.origin);
   }
 
   /** Number of elements present. */
@@ -265,15 +289,94 @@ export class WhiteboardBoard {
     return true;
   }
 
-  /** Swimlanes sorted by ascending `order`. */
+  /**
+   * Swimlanes grouped by `clusterId` then ascending `order` (then id, deterministic). A lane
+   * stored by a **v1 (pre-cluster)** doc has no `clusterId` key → `swimlaneSchema` projects it onto
+   * {@link LEGACY_CLUSTER_ID} via its default (read-time migration, no doc mutation).
+   */
   listSwimlanes(): Swimlane[] {
     const out: Swimlane[] = [];
     for (const ymap of this.swimlanes.values()) out.push(swimlaneSchema.parse(ymap.toJSON()));
-    out.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+    out.sort(
+      (a, b) =>
+        a.clusterId.localeCompare(b.clusterId) || a.order - b.order || a.id.localeCompare(b.id),
+    );
     return out;
   }
 
-  /** Shared swimlane width (default value when unset). */
+  // --- swimlane clusters (v2: freely-positioned aligned lane blocks) ---
+
+  /**
+   * Clusters currently **referenced by at least one lane** (a cluster's identity IS lane
+   * membership — an empty cluster is never projected). The {@link SWIMLANE_CLUSTERS_KEY} map only
+   * carries position/size **overrides**; a referenced-but-unstored cluster is synthesized at origin
+   * with the legacy shared width (this is the read-time v1→v2 migration for {@link LEGACY_CLUSTER_ID}).
+   */
+  listSwimlaneClusters(lanes: readonly Swimlane[] = this.listSwimlanes()): SwimlaneCluster[] {
+    const referenced = new Set<string>();
+    for (const lane of lanes) referenced.add(lane.clusterId);
+    const width = this.getSwimlanesWidth();
+    const out: SwimlaneCluster[] = [];
+    for (const id of referenced) {
+      const stored = this.clusters.get(id);
+      out.push(
+        stored
+          ? swimlaneClusterSchema.parse(stored.toJSON())
+          : swimlaneClusterSchema.parse({ id, x: 0, y: 0, width }),
+      );
+    }
+    out.sort((a, b) => a.id.localeCompare(b.id));
+    return out;
+  }
+
+  /** A referenced cluster (with its stored or synthesized position/size), or `undefined`. */
+  getSwimlaneCluster(id: string): SwimlaneCluster | undefined {
+    return this.listSwimlaneClusters().find((c) => c.id === id);
+  }
+
+  /** Writes a cluster override (validated input). Existence still requires a lane referencing it. */
+  addSwimlaneCluster(input: unknown): SwimlaneCluster {
+    const cluster = swimlaneClusterSchema.parse(input);
+    this.ensureSchemaVersion();
+    this.doc.transact(() => {
+      this.clusters.set(cluster.id, recordToYMap({ ...cluster }));
+    }, this.origin);
+    return cluster;
+  }
+
+  /**
+   * Patches a cluster's position/size. No-op `false` when no lane references `id`. Materializes the
+   * override map entry on first write to a synthesized (e.g. legacy) cluster.
+   */
+  updateSwimlaneCluster(id: string, patch: Partial<Omit<SwimlaneCluster, 'id'>>): boolean {
+    const current = this.getSwimlaneCluster(id);
+    if (!current) return false;
+    const merged = { ...current, ...patch, id };
+    swimlaneClusterSchema.parse(merged);
+    this.ensureSchemaVersion();
+    this.doc.transact(() => {
+      const existing = this.clusters.get(id);
+      if (existing) {
+        for (const [key, value] of Object.entries(patch)) {
+          if (value !== undefined) existing.set(key, value);
+        }
+      } else {
+        this.clusters.set(id, recordToYMap({ ...merged }));
+      }
+    }, this.origin);
+    return true;
+  }
+
+  /** Removes a cluster **override** (a still-referenced cluster reverts to the synthesized default). */
+  removeSwimlaneCluster(id: string): boolean {
+    if (!this.clusters.has(id)) return false;
+    this.doc.transact(() => {
+      this.clusters.delete(id);
+    }, this.origin);
+    return true;
+  }
+
+  /** Shared swimlane width (default when unset). @deprecated superseded by per-cluster `width`. */
   getSwimlanesWidth(): number {
     const value = this.meta.get(SWIMLANES_WIDTH_KEY);
     return typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -281,7 +384,7 @@ export class WhiteboardBoard {
       : DEFAULT_SWIMLANES_WIDTH;
   }
 
-  /** Sets the shared swimlane width. */
+  /** Sets the shared swimlane width. @deprecated superseded by `updateSwimlaneCluster`. */
   setSwimlanesWidth(width: number): void {
     if (!Number.isFinite(width) || width <= 0) return;
     this.doc.transact(() => {
@@ -327,9 +430,9 @@ export class WhiteboardBoard {
    */
   getSchemaVersion(): number {
     const value = this.meta.get(SCHEMA_VERSION_KEY);
-    return typeof value === 'number' && Number.isInteger(value) && value > 0
-      ? value
-      : DOC_SCHEMA_VERSION;
+    // An unstamped doc is treated as the pre-marker **baseline** (`1`), never the current version:
+    // it may be a legacy v1 document, and callers/migrations must not assume it is already v2.
+    return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : 1;
   }
 
   /**
@@ -437,9 +540,10 @@ export class WhiteboardBoard {
   toScene(): Scene {
     const background = this.getBackground();
     return {
-      version: 1,
+      version: 2,
       elements: this.listElements(),
       swimlanes: this.listSwimlanes(),
+      swimlaneClusters: this.listSwimlaneClusters(),
       swimlanesWidth: this.getSwimlanesWidth(),
       agentGroups: this.listAgentGroups(),
       ...(background ? { background } : {}),
@@ -460,6 +564,10 @@ export class WhiteboardBoard {
       }
       this.swimlanes.clear();
       for (const lane of scene.swimlanes) this.swimlanes.set(lane.id, recordToYMap({ ...lane }));
+      // Cluster overrides: a v1 bundle carries none → lanes project onto the legacy cluster on read.
+      this.clusters.clear();
+      for (const cluster of scene.swimlaneClusters ?? [])
+        this.clusters.set(cluster.id, recordToYMap({ ...cluster }));
       this.agentGroups.clear();
       for (const group of scene.agentGroups)
         this.agentGroups.set(group.id, recordToYMap({ ...group }));
@@ -474,11 +582,13 @@ export class WhiteboardBoard {
     const listener = (): void => handler();
     this.elements.observeDeep(listener);
     this.swimlanes.observeDeep(listener);
+    this.clusters.observeDeep(listener);
     this.agentGroups.observeDeep(listener);
     this.meta.observe(listener);
     return () => {
       this.elements.unobserveDeep(listener);
       this.swimlanes.unobserveDeep(listener);
+      this.clusters.unobserveDeep(listener);
       this.agentGroups.unobserveDeep(listener);
       this.meta.unobserve(listener);
     };

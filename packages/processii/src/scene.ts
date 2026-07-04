@@ -221,8 +221,19 @@ export const SWIMLANE_COLORS = [
 export type SwimlaneColor = (typeof SWIMLANE_COLORS)[number];
 
 /**
+ * Id of the implicit cluster that every **legacy** (pre-cluster) swimlane projects onto — a
+ * compile-time constant, deliberately **not derived from document content** so every peer projects
+ * the identical id and a later real write to it converges (CRDT safety). See the package README
+ * § "Document format & compatibility".
+ */
+export const LEGACY_CLUSTER_ID = 'cluster:legacy';
+
+/**
  * Swimlane — horizontal organizational band of the process board. Separate collection (not an
- * element): ordered (`order`), own height, width shared at scene level (`swimlanesWidth`).
+ * element). Belongs to a **cluster** ({@link swimlaneClusterSchema}): lanes sharing a `clusterId`
+ * form an aligned, vertically-stacked block (same left edge `x` + `width`) positioned freely in 2D.
+ * `order` is the 0-based rank **within its cluster**; `height` is its own. A legacy lane with no
+ * `clusterId` projects onto {@link LEGACY_CLUSTER_ID}.
  */
 export const swimlaneSchema = z.object({
   id: z.string().min(1),
@@ -232,7 +243,14 @@ export const swimlaneSchema = z.object({
   /** Free type label when `laneType === 'custom'` (otherwise ignored). */
   customType: z.string().optional(),
   color: z.enum(SWIMLANE_COLORS).default('neutral'),
-  /** 0-based vertical order. */
+  /**
+   * Id of the {@link swimlaneClusterSchema} this lane belongs to. Lanes sharing a cluster move
+   * together and stay aligned. Absent on legacy (pre-cluster) docs → defaults to the single
+   * {@link LEGACY_CLUSTER_ID} block. Cluster **identity is defined by lane membership** (a cluster
+   * with no lane is not rendered), so this reference — not the cluster map — is the source of truth.
+   */
+  clusterId: z.string().min(1).default(LEGACY_CLUSTER_ID),
+  /** 0-based order **within the cluster**. */
   order: z.number().int().nonnegative().default(0),
   /** Height in world units. */
   height: z.number().finite().positive().default(160),
@@ -250,17 +268,42 @@ export const agentGroupSchema = z.object({
 });
 export type AgentGroup = z.infer<typeof agentGroupSchema>;
 
-/** Shared width (world units) of all swimlanes. */
+/** Default width (world units) of a swimlane cluster (also the legacy shared width). */
 export const DEFAULT_SWIMLANES_WIDTH = 2000;
+
+/**
+ * Swimlane **cluster** — a freely-positioned, aligned block of swimlanes. Lanes referencing the
+ * same `clusterId` stack vertically from (`x`, `y`) and share `width`. The cluster map stores only
+ * position/size **overrides**; a cluster's very existence is implied by ≥1 lane pointing at it
+ * (empty clusters are never projected). Introduced with `DOC_SCHEMA_VERSION` 2.
+ */
+export const swimlaneClusterSchema = z.object({
+  id: z.string().min(1),
+  /** World x of the cluster's left edge (all its lanes align to it). */
+  x: z.number().finite().default(0),
+  /** World y of the cluster's top (its first lane starts here). */
+  y: z.number().finite().default(0),
+  /** Shared width (world units) of every lane in the cluster. */
+  width: z.number().finite().positive().default(DEFAULT_SWIMLANES_WIDTH),
+});
+export type SwimlaneCluster = z.infer<typeof swimlaneClusterSchema>;
 
 /** A complete scene (lossless native format), JSON-serializable. */
 export const sceneSchema = z.object({
-  /** Native format version (for future migrations). */
-  version: z.literal(1).default(1),
+  /**
+   * Native format version. `2` introduces {@link swimlaneClusterSchema} (2D-positioned lane
+   * blocks); `1` is the legacy single-stack layout, still accepted on import and migrated on load.
+   */
+  version: z.union([z.literal(1), z.literal(2)]).default(2),
   elements: z.array(elementSchema),
   /** Process board lanes (empty for a simple shape whiteboard). */
   swimlanes: z.array(swimlaneSchema).default([]),
-  /** Shared lane width. */
+  /** Freely-positioned lane clusters (v2+). Empty on a v1 bundle → one legacy cluster on load. */
+  swimlaneClusters: z.array(swimlaneClusterSchema).default([]),
+  /**
+   * @deprecated Shared lane width — kept for v1 bundle back-compat and as the legacy cluster's
+   * width; superseded by per-cluster {@link swimlaneClusterSchema.width}.
+   */
   swimlanesWidth: z.number().finite().positive().default(DEFAULT_SWIMLANES_WIDTH),
   /** Named step groupings. */
   agentGroups: z.array(agentGroupSchema).default([]),
@@ -325,9 +368,10 @@ export function parseScene(input: unknown): Scene {
 /** Creates a valid empty scene. */
 export function emptyScene(): Scene {
   return {
-    version: 1,
+    version: 2,
     elements: [],
     swimlanes: [],
+    swimlaneClusters: [],
     swimlanesWidth: DEFAULT_SWIMLANES_WIDTH,
     agentGroups: [],
   };

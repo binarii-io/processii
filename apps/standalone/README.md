@@ -212,10 +212,15 @@ language**: "ajoute une étape Validation après Réception et relie-les". Every
   - inter-lane handoff: `addHandoff` (creates the **vertically aligned** sent/received pair + link),
   - free shapes: `addShape`, `updateShape` (text + formatting/appearance/geometry),
   - lanes: `addSwimlane` (name-based anti-duplicate, `laneType` user/system/custom) /
-    `updateSwimlane` (name/type/color **+ `height`** to resize it) / `setLanesWidth` (**shared
-    width** of all lanes, floor = does not cut the cards) / `reorderSwimlane` (**vertical
-    reordering**: absolute `toIndex` or `before`/`after` another lane; the cards follow) /
+    `updateSwimlane` (name/type/color **+ `height`** to resize it) / `setLanesWidth` (width of a
+    **group** — optional `laneRef` targets a specific group; writes the per-cluster width, floor =
+    does not cut that group's cards) / `reorderSwimlane` (**vertical reordering within a group**:
+    `toIndex` or `before`/`after` another lane **of the same group**; the cards follow) /
     `deleteSwimlane`,
+  - lane **groups (clusters)**: `moveSwimlaneGroup` (moves a whole linked block — lanes **and** their
+    cards — by `dx`/`dy` or to an absolute `x`/`y`, group designated by any of its lanes) /
+    `detachSwimlane` (pulls a lane out into its own block at `x`/`y`, magnetic un-snap) /
+    `attachSwimlane` (re-snaps a lane into another group, adopting its alignment),
   - generic: `deleteElement` (step, shape or link; purges the orphan links),
   - meta + read: `setBoardName`, `setBoardBackground`, `getBoardState`.
     The board updates **live** during the loop.

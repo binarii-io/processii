@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { emptyScene, parseElement, parseScene, WhiteboardParseError } from './scene.js';
+import {
+  emptyScene,
+  LEGACY_CLUSTER_ID,
+  parseElement,
+  parseScene,
+  WhiteboardParseError,
+} from './scene.js';
 
 describe('scene model — validation', () => {
   it('applies the defaults on a minimal element', () => {
@@ -68,12 +74,24 @@ describe('scene model — validation', () => {
 
   it('validates an empty scene', () => {
     expect(parseScene(emptyScene())).toEqual({
-      version: 1,
+      version: 2,
       elements: [],
       swimlanes: [],
+      swimlaneClusters: [],
       swimlanesWidth: 2000,
       agentGroups: [],
     });
+  });
+
+  it('migrates a v1 scene: lanes default to the legacy cluster, clusters default empty', () => {
+    const parsed = parseScene({
+      version: 1,
+      elements: [],
+      swimlanes: [{ id: 'l1', order: 0, height: 120 }],
+      swimlanesWidth: 1500,
+    });
+    expect(parsed.swimlanes[0]).toMatchObject({ id: 'l1', clusterId: LEGACY_CLUSTER_ID });
+    expect(parsed.swimlaneClusters).toEqual([]);
   });
 
   it('applies the process collection defaults on a minimal scene', () => {
