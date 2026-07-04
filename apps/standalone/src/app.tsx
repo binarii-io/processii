@@ -1,5 +1,6 @@
 import {
   type PointerEvent as ReactPointerEvent,
+  useCallback,
   useEffect,
   useMemo,
   useReducer,
@@ -24,8 +25,12 @@ import {
   observePresence,
   publishIdentity,
   readParticipants,
+  viewportCenter,
   type Participant,
+  type Point,
   type PresenceParticipant,
+  type Size,
+  type Viewport,
 } from '@binarii/processii';
 
 import { DocumentSidebar } from './components/document-sidebar.js';
@@ -69,6 +74,18 @@ export function App({ wiring, participant }: AppProps) {
   const [, forceRender] = useReducer((n: number) => n + 1, 0);
   // Swimlane selection (process entity outside the element selection) → drives the side panel.
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
+  // Latest local viewport (pan/zoom) + canvas size, mirrored from `BoardCanvas`. Kept in a ref (not
+  // state): read on demand when creating an item, so it must not trigger a re-render (it changes on
+  // every pan/zoom frame). Lets new toolbar items spawn at the center of the visible board.
+  const viewRef = useRef<{ viewport: Viewport; size: Size } | null>(null);
+  const handleViewportChange = useCallback((viewport: Viewport, size: Size): void => {
+    viewRef.current = { viewport, size };
+  }, []);
+  const getSpawnCenter = useCallback(
+    (): Point | null =>
+      viewRef.current ? viewportCenter(viewRef.current.viewport, viewRef.current.size) : null,
+    [],
+  );
   // Collapsible sidebar (macOS-style toggle, like the web app): open by default, the
   // open/close (width) animation is carried by `AppShell` via `sidebarCollapsed`.
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -470,6 +487,7 @@ export function App({ wiring, participant }: AppProps) {
                     awareness={space.active.awareness}
                     selectedLaneId={selectedLaneId}
                     onSelectLane={setSelectedLaneId}
+                    onViewportChange={handleViewportChange}
                     onNavigateSubprocess={space.openDocument}
                   />
                 </div>
@@ -496,6 +514,7 @@ export function App({ wiring, participant }: AppProps) {
                       engine={space.active.engine}
                       onChange={forceRender}
                       selectionCount={space.active.engine.getSelection().length}
+                      getSpawnCenter={getSpawnCenter}
                       onCreateSubprocess={createSubprocess}
                     />
                   </div>

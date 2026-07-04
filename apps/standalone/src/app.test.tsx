@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { engineFromDoc } from '@binarii/processii';
 import type { CrdtDoc, PersistenceProvider, TransportProvider } from '@binarii/processii';
 import { App } from './app.js';
 import { createWiring, type StandaloneWiring } from './bootstrap.js';
@@ -98,6 +99,37 @@ describe('App — site standalone (offline-first)', () => {
 
     // The surface stays mounted (the local rendering succeeded).
     expect(screen.getByLabelText('Surface de dessin du whiteboard')).toBeInTheDocument();
+  });
+
+  it('a new toolbar shape spawns at the viewport center, not a fixed corner (issue #13)', async () => {
+    // Regression: the center-of-viewport wiring (onViewportChange → getSpawnCenter) was only done in
+    // `WhiteboardEditor`; the standalone app composes `BoardCanvas` + `Toolbar` itself, so without
+    // wiring it here shapes fell back to the legacy fixed corner. We capture the created doc via the
+    // persistence factory and inspect the board after the toolbar edit.
+    const user = userEvent.setup();
+    const docs: CrdtDoc[] = [];
+    const wiring: StandaloneWiring = {
+      demo: false,
+      persistenceFactoryFor: () => (doc) => {
+        docs.push(doc);
+        return fakePersistence(doc);
+      },
+      transportFactoryFor: () => (doc) => fakeTransport(doc),
+    };
+    render(<App wiring={wiring} participant={participant} />);
+
+    await user.click(
+      within(screen.getByRole('navigation')).getByRole('button', { name: 'Créer un whiteboard' }),
+    );
+    const toolbar = screen.getByRole('toolbar', { name: /Outils de dessin/i });
+    await user.click(within(toolbar).getByRole('button', { name: 'Rectangle' }));
+
+    // In jsdom the canvas stays unmeasured (ResizeObserver is a no-op) → default 800×600 at the
+    // identity viewport, so its center is world (400, 300). The 120×80 rectangle must be centered
+    // there (top-left 340, 260), NOT the legacy fixed corner (40, 40).
+    const engine = engineFromDoc(docs.at(-1)!);
+    const rect = engine.listElements().find((e) => e.kind === 'rectangle');
+    expect(rect).toMatchObject({ x: 340, y: 260, width: 120, height: 80 });
   });
 
   it('joins a room via the URL fragment without reloading (hashchange)', async () => {

@@ -341,6 +341,10 @@ function Surface({ doc, awareness, collaborator }) {
   optional: a `Toolbar` used standalone (no `getSpawnCenter`, or before the first canvas measure)
   falls back to the historical fixed positions. Swimlanes (positioned by their cluster), groups
   (metadata) and connectors (geometry-derived) are unaffected.
+  > **Hosts composing the primitives directly** (their own layout instead of `WhiteboardEditor`,
+  > like the standalone app) must wire this themselves: forward `BoardCanvas`'s `onViewportChange`
+  > into a ref and hand a `getSpawnCenter` derived via `viewportCenter(viewport, size)` to the
+  > `Toolbar` — otherwise shapes silently fall back to the fixed positions.
 - Primitives also exported individually (`BoardCanvas`, `Toolbar`, `StylePanel`, `SidePanel`,
   `PresenceAvatars`) + awareness presence helpers (`publishCursor`, `publishSelection`,
   `publishIdentity`, `observePresence`, `readRemoteCursors`, `readRemoteSelections`, `readParticipants`,
