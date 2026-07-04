@@ -137,10 +137,12 @@ the app side, the engine only paints).
 The engine stores absolute **world** coordinates (what converges in collab and persists offline).
 **Zoom/pan** is on the contrary a **local presentation** state (like the selection): a pure
 `Viewport { x, y, zoom }`, outside the CRDT. `viewport.ts` provides the world↔screen transforms
-(`screenToWorld`, `worldToScreen`), the pan (`panBy`) and the **cursor-anchored zoom** (`zoomAt`,
-saturated within `[MIN_ZOOM, MAX_ZOOM]`). `renderToCanvas` applies this viewport (`translate` +
-`scale`) and can draw a **marquee rectangle**; the UI indicators (selection, marquee) compensate
-for the zoom to stay ~1px on screen.
+(`screenToWorld`, `worldToScreen`), the pan (`panBy`), the **cursor-anchored zoom** (`zoomAt`,
+saturated within `[MIN_ZOOM, MAX_ZOOM]`) and `viewportCenter(viewport, size)` — the world point at
+the **center of the visible canvas** (pure companion of `screenToWorld`), used to drop freshly
+created items where the user is looking rather than at a fixed world position. `renderToCanvas`
+applies this viewport (`translate` + `scale`) and can draw a **marquee rectangle**; the UI
+indicators (selection, marquee) compensate for the zoom to stay ~1px on screen.
 
 `hit-test.ts` answers "which element under this point?" (`hitTest`, topmost by z) and
 "which elements inside this rectangle?" (`elementsInBox`, bbox intersection). The test is
@@ -331,6 +333,14 @@ function Surface({ doc, awareness, collaborator }) {
   (toolbar/canvas/panel act on the same instance); `editable={false}` hides the editing
   controls. The **avatar chips** remain the host app's responsibility (per-app chrome).
 - **`useWhiteboardEngine(doc)`** — hook memoizing `engineFromDoc(doc)` (null while `doc` is absent).
+- **New items spawn at the viewport center.** `WhiteboardEditor` mirrors the canvas viewport +
+  size (`BoardCanvas`'s `onViewportChange`, local presentation state — never persisted) and passes
+  the current center down to the `Toolbar` as `getSpawnCenter(): Point | null`. Toolbar shapes
+  (rectangle/ellipse/text/sticky/step/sub-process) are then created **centered on what the user is
+  looking at**, whatever the pan/zoom, instead of a fixed off-screen corner. Both props are
+  optional: a `Toolbar` used standalone (no `getSpawnCenter`, or before the first canvas measure)
+  falls back to the historical fixed positions. Swimlanes (positioned by their cluster), groups
+  (metadata) and connectors (geometry-derived) are unaffected.
 - Primitives also exported individually (`BoardCanvas`, `Toolbar`, `StylePanel`, `SidePanel`,
   `PresenceAvatars`) + awareness presence helpers (`publishCursor`, `publishSelection`,
   `publishIdentity`, `observePresence`, `readRemoteCursors`, `readRemoteSelections`, `readParticipants`,
@@ -400,6 +410,7 @@ import {
   resolveColor, // rendering
   screenToWorld,
   worldToScreen,
+  viewportCenter,
   panBy,
   zoomAt, // viewport (zoom/pan)
   hitTest,

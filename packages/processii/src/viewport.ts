@@ -56,6 +56,23 @@ export function worldToScreen(viewport: Viewport, world: Point): Point {
   };
 }
 
+/** Canvas dimensions in CSS pixels (screen space). */
+export interface Size {
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * World point currently at the **center of the visible canvas** (of the given CSS-pixel size),
+ * under this viewport. Pure companion of {@link screenToWorld}: this is where a freshly created
+ * item should be dropped so it appears in the middle of what the user is actually looking at,
+ * whatever the current pan/zoom — rather than at a fixed world position that may have scrolled
+ * off-screen.
+ */
+export function viewportCenter(viewport: Viewport, size: Size): Point {
+  return screenToWorld(viewport, { x: size.width / 2, y: size.height / 2 });
+}
+
 /** Pan: translates the view by a **screen** delta (px). The zoom is unchanged. */
 export function panBy(viewport: Viewport, dxScreen: number, dyScreen: number): Viewport {
   return { x: viewport.x + dxScreen, y: viewport.y + dyScreen, zoom: viewport.zoom };

@@ -26,6 +26,7 @@ import {
   Undo2,
 } from 'lucide-react';
 import type { WhiteboardEngine } from './engine.js';
+import type { Point } from './viewport.js';
 
 /**
  * **Local** editing toolbar: adds shapes, deletes the selection, and exposes
@@ -44,6 +45,13 @@ export interface ToolbarProps {
    * Present → shows the "Sub-process" button (adds a step linked to this new child).
    */
   readonly onCreateSubprocess?: () => Promise<string | null>;
+  /**
+   * Returns the world point at the **center of the visible canvas** (or `null` if not known yet).
+   * When provided, newly created shapes are dropped there — centered on what the user is currently
+   * looking at — instead of at a fixed world position that may be off-screen. Wired by
+   * `WhiteboardEditor` from the canvas viewport; absent → the historical fixed placement is used.
+   */
+  readonly getSpawnCenter?: () => Point | null;
 }
 
 let seq = 0;
@@ -194,6 +202,7 @@ export function Toolbar({
   onChange,
   selectionCount = 0,
   onCreateSubprocess,
+  getSpawnCenter,
 }: ToolbarProps) {
   const history = engine.history();
   const [canUndo, setCanUndo] = useState(history.canUndo());
@@ -214,6 +223,20 @@ export function Toolbar({
     onChange?.();
   };
 
+  // Top-left corner (world coords) for a new shape of the given size so that it ends up **centered
+  // on the visible canvas**. Falls back to the historical fixed position when the viewport center
+  // is unknown — toolbar used standalone (no editor) or before the first canvas measure.
+  const placeAt = (
+    width: number,
+    height: number,
+    fallbackX: number,
+    fallbackY: number,
+  ): { x: number; y: number } => {
+    const center = getSpawnCenter?.();
+    if (!center) return { x: fallbackX, y: fallbackY };
+    return { x: Math.round(center.x - width / 2), y: Math.round(center.y - height / 2) };
+  };
+
   return (
     <TooltipProvider delayDuration={300}>
       <div
@@ -228,8 +251,7 @@ export function Toolbar({
             add({
               kind: 'rectangle',
               id: elementId(),
-              x: 40,
-              y: 40,
+              ...placeAt(120, 80, 40, 40),
               width: 120,
               height: 80,
               fill: 'surface', // white background by default (theme token: white in light, card in dark)
@@ -244,8 +266,7 @@ export function Toolbar({
             add({
               kind: 'ellipse',
               id: elementId(),
-              x: 80,
-              y: 80,
+              ...placeAt(100, 100, 80, 80),
               width: 100,
               height: 100,
               fill: 'surface',
@@ -260,8 +281,7 @@ export function Toolbar({
             add({
               kind: 'text',
               id: elementId(),
-              x: 60,
-              y: 60,
+              ...placeAt(160, 32, 60, 60),
               width: 160,
               height: 32,
               text: 'Texte',
@@ -275,8 +295,7 @@ export function Toolbar({
             add({
               kind: 'text',
               id: elementId(),
-              x: 60,
-              y: 60,
+              ...placeAt(140, 100, 60, 60),
               width: 140,
               height: 100,
               text: 'Note',
@@ -309,8 +328,7 @@ export function Toolbar({
             add({
               kind: 'step',
               id: elementId(),
-              x: 80,
-              y: 80,
+              ...placeAt(200, 120, 80, 80),
               width: 200,
               height: 120,
               name: 'Étape',
@@ -331,8 +349,7 @@ export function Toolbar({
                 add({
                   kind: 'step',
                   id: elementId(),
-                  x: 80,
-                  y: 80,
+                  ...placeAt(200, 120, 80, 80),
                   width: 200,
                   height: 120,
                   name: 'Sous-process',

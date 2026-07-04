@@ -15,6 +15,7 @@ import {
   zoomAt,
   IDENTITY_VIEWPORT,
   type Point,
+  type Size,
   type Viewport,
 } from './viewport.js';
 import { snapMove } from './snap.js';
@@ -57,6 +58,13 @@ export interface BoardCanvasProps {
   /** Initial zoom (and "reset view" zoom). Defaults to `1`. Used e.g. to zoom out an embedded
    *  demo on a small screen so the whole board fits without changing its proportions. */
   readonly initialZoom?: number;
+  /**
+   * Notified whenever the local **viewport** (pan/zoom) or the canvas **size** changes. Lets the
+   * host (e.g. `WhiteboardEditor`) place freshly created items at the center of what the user is
+   * currently looking at (`viewportCenter`) instead of a fixed world position. Local presentation
+   * state only — never persisted or shared.
+   */
+  readonly onViewportChange?: (viewport: Viewport, size: Size) => void;
 }
 
 /** Snapping threshold, in screen pixels (converted to world units via the zoom). */
@@ -299,6 +307,7 @@ export function BoardCanvas({
   onSelectLane,
   onNavigateSubprocess,
   initialZoom = 1,
+  onViewportChange,
 }: BoardCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -411,6 +420,13 @@ export function BoardCanvas({
       resetView();
     }
   }, [fixedSize, size.w, size.h, resetView]);
+
+  // Mirror the viewport (pan/zoom) and canvas size to the host after each change, so it can drop
+  // freshly created items at the center of the visible area (see `onViewportChange`). Cheap: the
+  // host just stores the latest value; it does not force a re-render here.
+  useEffect(() => {
+    onViewportChange?.(viewport, { width: size.w, height: size.h });
+  }, [onViewportChange, viewport, size.w, size.h]);
 
   const draw = useCallback((): void => {
     const canvas = canvasRef.current;
