@@ -849,7 +849,7 @@ function drawSwimlane(
   zoom: number,
   selected: boolean,
 ): void {
-  const { lane, y, width } = item;
+  const { lane, x, y, width } = item;
   const rgb = LANE_PALETTE[lane.color];
   // Effective colors: extension palette for named colors, ui-kit tokens for `neutral`.
   const fill = rgb
@@ -862,22 +862,22 @@ function drawSwimlane(
   // Tinted background (alpha embedded in the color).
   ctx.fillStyle = fill;
   ctx.beginPath();
-  ctx.rect(0, y, width, lane.height);
+  ctx.rect(x, y, width, lane.height);
   ctx.fill();
   // Bottom separator (accent outline when selected).
   ctx.lineWidth = (selected ? 2 : 1) / zoom;
   ctx.strokeStyle = selected ? paint('accent') : border;
   ctx.beginPath();
-  ctx.moveTo(0, y + lane.height);
-  ctx.lineTo(width, y + lane.height);
+  ctx.moveTo(x, y + lane.height);
+  ctx.lineTo(x + width, y + lane.height);
   ctx.stroke();
   // Header: dot + name in the lane color (like the extension).
   ctx.fillStyle = accent;
   ctx.beginPath();
-  ctx.rect(8, y + 8, 10, 10);
+  ctx.rect(x + 8, y + 8, 10, 10);
   ctx.fill();
   ctx.font = '600 12px sans-serif';
-  ctx.fillText(lane.name || 'Bande', 24, y + 16);
+  ctx.fillText(lane.name || 'Bande', x + 24, y + 16);
   // Lane type under the title (dimmed secondary label). For a **custom** type, show the free
   // label typed in when it exists, otherwise the generic word.
   const typeLabel =
@@ -886,7 +886,7 @@ function drawSwimlane(
       : (LANE_TYPE_LABEL[lane.laneType] ?? lane.laneType);
   ctx.font = '500 10px sans-serif';
   ctx.globalAlpha = 0.65;
-  ctx.fillText(typeLabel, 24, y + 30);
+  ctx.fillText(typeLabel, x + 24, y + 30);
   ctx.globalAlpha = 1;
   ctx.restore();
 }

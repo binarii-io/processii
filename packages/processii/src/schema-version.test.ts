@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import * as Y from 'yjs';
 import { syncDocs } from './crdt/index.js';
 import { boardFromDoc, createBoard, DOC_SCHEMA_VERSION, type WhiteboardBoard } from './board.js';
-import { WhiteboardSchemaVersionError } from './scene.js';
+import { LEGACY_CLUSTER_ID, WhiteboardSchemaVersionError } from './scene.js';
 
 const META_KEY = 'whiteboard:meta';
 const SCHEMA_VERSION_KEY = 'schemaVersion';
+const SWIMLANES_KEY = 'whiteboard:swimlanes';
 
 /** Raw meta map of a board's Y.Doc — to inspect/forge the version marker as a foreign writer would. */
 const rawMeta = (board: WhiteboardBoard) => board.doc.getMap<unknown>(META_KEY);
@@ -14,11 +16,11 @@ function rect(id: string, x = 0, y = 0): unknown {
 }
 
 describe('board — Y.Doc schema version', () => {
-  it('a fresh board defaults to the current version and is readable before any edit', () => {
+  it('a fresh (unstamped) board reads as the pre-marker baseline (1) and is readable', () => {
     const board = createBoard({ clientId: 1 });
-    // No marker yet: an unstamped doc reads as the current baseline.
+    // No marker yet: an unstamped doc reads as `1` — it may be a legacy v1 document.
     expect(rawMeta(board).has(SCHEMA_VERSION_KEY)).toBe(false);
-    expect(board.getSchemaVersion()).toBe(DOC_SCHEMA_VERSION);
+    expect(board.getSchemaVersion()).toBe(1);
     expect(() => board.assertReadable()).not.toThrow();
   });
 
@@ -35,12 +37,31 @@ describe('board — Y.Doc schema version', () => {
     // Simulate a legacy doc (written before the marker existed): strip the key.
     rawMeta(board).delete(SCHEMA_VERSION_KEY);
     expect(rawMeta(board).has(SCHEMA_VERSION_KEY)).toBe(false);
-    expect(board.getSchemaVersion()).toBe(DOC_SCHEMA_VERSION);
+    expect(board.getSchemaVersion()).toBe(1); // unstamped → pre-marker baseline
     expect(() => board.assertReadable()).not.toThrow();
 
     board.addElement(rect('a2'));
     expect(rawMeta(board).has(SCHEMA_VERSION_KEY)).toBe(true);
     expect(board.getSchemaVersion()).toBe(DOC_SCHEMA_VERSION);
+  });
+
+  it('is currently v2 (swimlane clusters)', () => {
+    expect(DOC_SCHEMA_VERSION).toBe(2);
+  });
+
+  it('migrates a v1 doc on read: legacy lanes project onto the single legacy cluster', () => {
+    const board = createBoard({ clientId: 1 });
+    board.addSwimlane({ id: 'l1', order: 0, height: 100 });
+    board.addSwimlane({ id: 'l2', order: 1, height: 100 });
+    // Simulate a v1 document: mark version 1 and strip the clusterId key the v2 build now writes.
+    rawMeta(board).set(SCHEMA_VERSION_KEY, 1);
+    const lanes = board.doc.getMap<Y.Map<unknown>>(SWIMLANES_KEY);
+    for (const lane of lanes.values()) lane.delete('clusterId');
+
+    expect(() => board.assertReadable()).not.toThrow(); // v1 ≤ v2 → readable
+    expect(board.listSwimlanes().every((l) => l.clusterId === LEGACY_CLUSTER_ID)).toBe(true);
+    expect(board.listSwimlaneClusters()).toHaveLength(1);
+    expect(board.listSwimlaneClusters()[0]?.id).toBe(LEGACY_CLUSTER_ID);
   });
 
   it('refuses a document written by a newer schema version', () => {

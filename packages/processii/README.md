@@ -83,8 +83,8 @@ which revalidate as well.
 
 Persisted boards (users' IndexedDB, consumers' databases) carry a **Y.Doc schema version** — the
 integer `schemaVersion` in the board's meta map, exposed as the constant **`DOC_SCHEMA_VERSION`**
-(currently `1`). It is stamped on a document's first edit and read back via
-`board.getSchemaVersion()` (an older, unstamped document reads as `1`).
+(currently `2`). It is stamped on a document's first edit and read back via
+`board.getSchemaVersion()` (an older, unstamped document reads as `1`, the pre-marker baseline).
 
 **Compatibility policy (guaranteed):**
 
@@ -103,8 +103,21 @@ integer `schemaVersion` in the board's meta map, exposed as the constant **`DOC_
 layout — a new/renamed top-level `Y.Map` key, a new element `kind`, a changed literal — paired with
 a migration from the previous version. Adding an optional field does **not** bump it.
 
+**v1 → v2 (swimlane clusters), migrated on read.** v2 adds a `whiteboard:swimlaneClusters` `Y.Map`
+and a `clusterId` field on each lane so swimlanes stack per **freely-positioned cluster** instead of
+a single top-anchored column (see [Process board](#process-board-process-model)). A v1 document
+(lanes with no `clusterId`, no cluster map) is migrated **as a pure read-time projection — never a
+doc write**: an unstamped `clusterId` defaults to the constant **`LEGACY_CLUSTER_ID`**, and the one
+synthetic legacy cluster sits at the origin with the old shared `swimlanesWidth` as its width (kept,
+now deprecated). The projection is convergent because the legacy id is a compile-time constant, so
+every peer projects the identical cluster; detach mints deterministic ids (`cluster:<src>:<lane>`)
+for the same reason. A cluster's identity is defined by **lane membership**, not by a map entry (an
+empty cluster is never projected), so structural edits stay convergent. Per the policy above, a v1
+build **refuses** a v2 document (`assertReadable` → `WhiteboardSchemaVersionError`).
+
 This `schemaVersion` (the live CRDT layout) is **distinct** from `sceneSchema.version` (the exported
-`Scene`/bundle JSON version): two surfaces, two version numbers, which may evolve independently.
+`Scene`/bundle JSON version, also bumped to `2` for the `swimlaneClusters` array): two surfaces, two
+version numbers, which may evolve independently.
 
 ## Rendering
 
@@ -149,19 +162,35 @@ Beyond the shapes, the engine carries the **process board** model: the `whiteboa
 document type. In addition to the `step` elements (card nodes), the scene contains
 two **collections** stored in the CRDT board next to the elements:
 
-- **swimlanes** (`Swimlane`) — ordered horizontal bands (`order`, `height`, `color`,
-  `laneType`), with a shared width `swimlanesWidth`. CRUD: `engine.addSwimlane/updateSwimlane/
-removeSwimlane/listSwimlanes` (+ `get/setSwimlanesWidth`). The header displays the **name**
-  then, below, the readable **type** (Utilisateur / Système / Personnalisé).
-  **Drag-and-drop reordering**: `engine.reorderSwimlane(id, targetIndex)` moves a lane to a new
-  index, **renumbers `order` (0..n-1)** and **carries each lane's content by geometry** — any
-  non-connector element whose **vertical center** falls inside a lane follows that lane (not
-  only the steps "attached" via `swimlaneId`: a card dropped by hand follows too) — then
-  re-routes the connectors. On the UI side (`board-canvas`), **dragging a lane header** reorders
-  it: a translucent **ghost** (the lane's footprint) follows the cursor and a **drop line**
-  (accent, full width) marks the boundary where it will land; the move is **committed on
-  release** (above / below the hovered lane depending on its middle). `grab`/`grabbing` cursor;
-  a plain click only selects.
+- **swimlanes** (`Swimlane`) — horizontal bands belonging to a **cluster** (`clusterId`), ordered
+  **within their cluster** (`order`, `height`, `color`, `laneType`). CRUD:
+  `engine.addSwimlane/updateSwimlane/removeSwimlane/listSwimlanes`.
+- **swimlane clusters** (`SwimlaneCluster`) — freely-positioned, **aligned** blocks: lanes sharing a
+  `clusterId` stack vertically from the cluster's (`x`, `y`) and share its `width`. A cluster's
+  identity comes from **lane membership**; the `whiteboard:swimlaneClusters` map only stores
+  position/size **overrides** (`engine.listSwimlaneClusters/getSwimlaneCluster/addSwimlaneCluster/
+updateSwimlaneCluster/removeSwimlaneCluster`). The legacy shared `swimlanesWidth`
+  (`get/setSwimlanesWidth`) is **kept but deprecated** — it backs the single legacy cluster of a
+  migrated v1 doc (see [Document format & compatibility](#document-format--compatibility)).
+
+  **Move / attach / detach.** Lanes and clusters are freely movable with **magnetic** attach/detach:
+  - `engine.moveCluster(id, dx, dy)` translates a whole cluster **and its lanes' content** together.
+  - `engine.detachSwimlaneTo(id, x, y)` pulls a lane out into its own new cluster (deterministic id
+    `cluster:<src>:<lane>`), carrying its content and reflowing the source.
+  - `engine.attachSwimlane(id, targetClusterId, atIndex?)` merges a lane into another cluster,
+    adopting its `x`/`width` and closing the gap it leaves.
+  - `engine.reorderSwimlane(id, targetIndex)` reorders **within a cluster** (renumbers `order`).
+
+  All four **carry each lane's content by geometry** — any non-connector element whose **center**
+  falls inside a lane's band follows it (not only steps "attached" via `swimlaneId`: a card dropped
+  by hand follows too) — then re-route connectors. On the UI side (`board-canvas`): **dragging a
+  lane header** previews reorder / attach / detach (a translucent **ghost** follows the cursor, an
+  accent **drop line** marks the reorder/attach slot; far from every cluster → detach), committed on
+  release; **dragging a cluster's left-edge grip** moves the whole linked block — the grip (and an
+  outline of the block it will move) is **revealed on hover** of that left-edge zone, not shown
+  permanently; **the bottom edge** resizes a lane's height, **the right edge** the cluster's width.
+  `grab`/`grabbing` cursor; a plain click only selects.
+
 - **agentGroups** (`AgentGroup`) — **generic named** groupings of steps (`stepIds[]`). CRUD:
   `engine.addAgentGroup/updateAgentGroup/removeAgentGroup/listAgentGroups`.
 
@@ -195,12 +224,13 @@ exit/entry through an anchor side (`startSide`/`endSide` ∈ N/E/S/W, pinned or 
 face-to-face), right-angle elbow, and **simplification** of the collinear points (an aligned
 case becomes a straight line again; identical pinned sides, e.g. `n`→`n`, produce a **loop**).
 Optional arrowheads at the ends (`startArrow`/`endArrow`), rendered as solid triangles oriented
-along the last segment. `toScene`/`loadScene` cover elements + swimlanes + groups + width;
+along the last segment. `toScene`/`loadScene` cover elements + swimlanes + clusters + groups + width;
 `observe` notifies on **all** collections; the undo/redo history covers them all.
 `skills`/`deliverables` are **free-form labels** (no registry — free adaptation).
 
-**Rendering**: `toRenderModel()` computes the process layout — stacked swimlanes (cumulative y
-following `order`, shared width) and the groups' bboxes (enclosing the member steps + margin).
+**Rendering**: `toRenderModel()` computes the process layout — swimlanes positioned **per cluster**
+(each lane at its cluster's `x`/`width`, stacked by `order` from the cluster's `y`) and the groups'
+bboxes (enclosing the member steps + margin).
 `renderToCanvas` draws, **under** the elements, the lanes (translucent background mapped to a
 semantic token + header + separator) then the groups (frame + label in `accent`), before the
 elements/handles/guides.

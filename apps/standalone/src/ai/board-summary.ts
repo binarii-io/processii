@@ -23,14 +23,20 @@ export interface StepGeometry {
 export interface BoardSummary {
   readonly name: string | null;
   readonly background: string | null;
-  /** Shared width of all lanes (world units). */
+  /** @deprecated Legacy shared width; per-lane `width`/`left` are authoritative (multi-cluster). */
   readonly swimlanesWidth: number;
   readonly swimlanes: ReadonlyArray<{
     id: string;
     name: string;
     color: string;
-    /** 0-based vertical order. */
+    /** Id of the **group (cluster)** this lane belongs to (lanes sharing it move together). */
+    clusterId: string;
+    /** 0-based vertical order **within its cluster**. */
     order: number;
+    /** Left edge of the lane's band (world units) — a cluster may sit at x ≠ 0. */
+    left: number;
+    /** Width of the lane's band (world units) — per cluster, not shared. */
+    width: number;
     /** Ordinate of the lane top (world units). */
     top: number;
     /** Lane height (world units). */
@@ -55,18 +61,22 @@ export interface BoardSummary {
 
 const round = (n: number): number => Math.round(n);
 
-/** Lane geometry (top/height/order), indexed by id. */
+interface LaneBox {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Absolute lane band + cluster membership, indexed by id (cluster-aware, not x=0 assumed). */
 function laneGeometry(
   engine: WhiteboardEngine,
-): Map<string, { top: number; height: number; order: number; name: string }> {
-  const map = new Map<string, { top: number; height: number; order: number; name: string }>();
+): Map<string, { band: LaneBox; order: number; name: string; clusterId: string }> {
+  const map = new Map<string, { band: LaneBox; order: number; name: string; clusterId: string }>();
   for (const lane of engine.listSwimlanes()) {
-    map.set(lane.id, {
-      top: engine.laneTop(lane.id),
-      height: lane.height,
-      order: lane.order,
-      name: lane.name,
-    });
+    const band = engine.laneBand(lane.id);
+    if (!band) continue;
+    map.set(lane.id, { band, order: lane.order, name: lane.name, clusterId: lane.clusterId });
   }
   return map;
 }
@@ -93,17 +103,17 @@ export function summarizeBoard(engine: WhiteboardEngine): BoardSummary {
         x: el.x + el.width / 2,
         y: el.y + el.height / 2,
       });
-      // Misplaced = a lane is assigned but the card does not **fully** fit inside it (vertical
-      // overflow, or its x leaves the shared width → outside the visible lane).
+      // Misplaced = a lane is assigned but the card does not **fully** fit inside its actual band
+      // (checked against the lane's real cluster-positioned rectangle, not an x=0 shared-width box).
       let misplaced = false;
       if (el.swimlaneId) {
         const lane = lanes.get(el.swimlaneId);
         const fits =
           lane !== undefined &&
-          el.y >= lane.top &&
-          el.y + el.height <= lane.top + lane.height &&
-          el.x >= 0 &&
-          el.x + el.width <= width;
+          el.y >= lane.band.y &&
+          el.y + el.height <= lane.band.y + lane.band.height &&
+          el.x >= lane.band.x &&
+          el.x + el.width <= lane.band.x + lane.band.width;
         misplaced = !fits;
       }
       steps.push({
@@ -137,14 +147,20 @@ export function summarizeBoard(engine: WhiteboardEngine): BoardSummary {
     name: engine.getName(),
     background: engine.getBackground(),
     swimlanesWidth: round(width),
-    swimlanes: engine.listSwimlanes().map((l) => ({
-      id: l.id,
-      name: l.name,
-      color: l.color,
-      order: l.order,
-      top: round(engine.laneTop(l.id)),
-      height: round(l.height),
-    })),
+    swimlanes: engine.listSwimlanes().map((l) => {
+      const band = lanes.get(l.id)?.band;
+      return {
+        id: l.id,
+        name: l.name,
+        color: l.color,
+        clusterId: l.clusterId,
+        order: l.order,
+        left: round(band?.x ?? 0),
+        width: round(band?.width ?? width),
+        top: round(band?.y ?? 0),
+        height: round(l.height),
+      };
+    }),
     steps,
     connectors,
     shapes,
@@ -157,12 +173,20 @@ export function renderSummaryText(summary: BoardSummary): string {
   lines.push(`Board : « ${summary.name ?? 'Sans titre'} »`);
 
   if (summary.swimlanes.length > 0) {
-    lines.push(`Largeur partagée des bandes : ${summary.swimlanesWidth}`);
-    lines.push('Bandes (swimlanes) — empilées du haut vers le bas :');
-    for (const l of summary.swimlanes)
+    const clusterIds = new Set(summary.swimlanes.map((l) => l.clusterId));
+    const multi = clusterIds.size > 1;
+    lines.push(
+      multi
+        ? `Bandes (swimlanes) — ${clusterIds.size} groupes déplaçables {clusterId}, chaque groupe empilé de haut en bas :`
+        : 'Bandes (swimlanes) — empilées du haut vers le bas :',
+    );
+    // Lanes come sorted by cluster then order, so same-group lanes are contiguous.
+    for (const l of summary.swimlanes) {
+      const grp = multi ? ` {${l.clusterId}}` : '';
       lines.push(
-        `  - ${l.id} · ${l.name || '(sans nom)'} [${l.color}] — y ${l.top}→${l.top + l.height} (hauteur ${l.height})`,
+        `  - ${l.id} · ${l.name || '(sans nom)'} [${l.color}]${grp} — x ${l.left}→${l.left + l.width}, y ${l.top}→${l.top + l.height} (hauteur ${l.height})`,
       );
+    }
   }
 
   if (summary.steps.length === 0) {

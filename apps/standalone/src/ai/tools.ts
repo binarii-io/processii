@@ -90,14 +90,50 @@ function nextFlowX(engine: WhiteboardEngine): number {
   return steps.reduce((m, s) => Math.max(m, s.x + s.width), 0) + STEP_GAP;
 }
 
-/** Places a new step: x = global flow (never reset to the lane start), y = centered in the lane. */
+/**
+ * Steps belonging to `clusterId`: those **assigned** (`swimlaneId`) to one of its lanes — even if
+ * placed beyond the current width, which is exactly when we must widen — plus unassigned steps whose
+ * center geometrically falls in one of its lanes. A step assigned to another cluster's lane is out.
+ */
+function stepsInCluster(engine: WhiteboardEngine, clusterId: string): StepElement[] {
+  const laneIds = new Set(
+    engine
+      .listSwimlanes()
+      .filter((l) => l.clusterId === clusterId)
+      .map((l) => l.id),
+  );
+  if (laneIds.size === 0) return [];
+  return engine
+    .listElements()
+    .filter(isStep)
+    .filter((s) => {
+      if (s.swimlaneId) return laneIds.has(s.swimlaneId); // explicit assignment is authoritative
+      const owner = engine.laneAtPoint({ x: s.x + s.width / 2, y: s.y + s.height / 2 });
+      return owner !== undefined && laneIds.has(owner);
+    });
+}
+
+/** Next x of the flow **within a cluster**, measured from the cluster's own left edge. */
+function clusterFlowX(engine: WhiteboardEngine, clusterId: string, clusterLeft: number): number {
+  const steps = stepsInCluster(engine, clusterId);
+  if (steps.length === 0) return clusterLeft + LANE_START_X;
+  return steps.reduce((m, s) => Math.max(m, s.x + s.width), 0) + STEP_GAP;
+}
+
+/** Places a new step: x = flow **within the lane's cluster**, y = centered in the lane's band. */
 function nextStepPosition(engine: WhiteboardEngine, swimlaneId?: string): { x: number; y: number } {
-  const x = nextFlowX(engine);
   if (swimlaneId) {
-    const lane = laneById(engine, swimlaneId);
-    const top = engine.laneTop(swimlaneId);
-    return { x, y: top + Math.max(LANE_MARGIN, ((lane?.height ?? 160) - STEP_H) / 2) };
+    const band = engine.laneBand(swimlaneId);
+    const clusterId = engine.listSwimlanes().find((l) => l.id === swimlaneId)?.clusterId;
+    if (band && clusterId !== undefined) {
+      return {
+        x: clusterFlowX(engine, clusterId, band.x),
+        y: band.y + Math.max(LANE_MARGIN, (band.height - STEP_H) / 2),
+      };
+    }
   }
+  // No lane: global flow, aligned to the rightmost step (or a default y).
+  const x = nextFlowX(engine);
   const steps = engine.listElements().filter(isStep);
   const rightmost = steps.length
     ? steps.reduce((r, s) => (s.x + s.width > r.x + r.width ? s : r), steps[0]!)
@@ -105,13 +141,16 @@ function nextStepPosition(engine: WhiteboardEngine, swimlaneId?: string): { x: n
   return { x, y: rightmost ? rightmost.y : 80 };
 }
 
-/** Widens the lanes to **contain every step** (otherwise they overflow to the right). */
+/** Widens **each cluster** to contain the steps in its lanes (otherwise they overflow to the right). */
 function ensureLanesWidth(engine: WhiteboardEngine): void {
-  if (engine.listSwimlanes().length === 0) return;
-  const steps = engine.listElements().filter(isStep);
-  if (steps.length === 0) return;
-  const needed = steps.reduce((m, s) => Math.max(m, s.x + s.width), 0) + 120;
-  if (engine.getSwimlanesWidth() < needed) engine.setSwimlanesWidth(needed);
+  for (const cluster of engine.listSwimlaneClusters()) {
+    const steps = stepsInCluster(engine, cluster.id);
+    if (steps.length === 0) continue;
+    const rightEdge = steps.reduce((m, s) => Math.max(m, s.x + s.width), 0);
+    const needed = rightEdge - cluster.x + 120;
+    // Write the per-cluster width override (the source geometry/UI actually read), not the meta.
+    if (cluster.width < needed) engine.updateSwimlaneCluster(cluster.id, { width: needed });
+  }
 }
 
 /** Readable label of an element for the trace (step name, shape text, or id). */
@@ -129,6 +168,16 @@ function resolveLaneId(engine: WhiteboardEngine, ref: string): string | undefine
   if (lanes.some((l) => l.id === ref)) return ref;
   const r = ref.trim().toLowerCase();
   return lanes.find((l) => l.name.trim().toLowerCase() === r)?.id;
+}
+
+/**
+ * Resolves a **group (cluster)** reference: the id/name of ANY lane in it (a cluster's identity is
+ * lane membership) OR a raw cluster id. Returns the cluster id.
+ */
+function resolveClusterId(engine: WhiteboardEngine, ref: string): string | undefined {
+  const laneId = resolveLaneId(engine, ref);
+  if (laneId) return engine.listSwimlanes().find((l) => l.id === laneId)?.clusterId;
+  return engine.listSwimlaneClusters().some((c) => c.id === ref) ? ref : undefined;
 }
 
 /** Claims a new element's id: the one **provided by the model** (stable slug) otherwise generated.
@@ -410,9 +459,11 @@ const moveStepToLane = defineTool({
       grewLane = true;
       recenterAssignedSteps(ctx.engine);
     }
-    // 2) Place the card: centered in the lane (height possibly updated), x kept/forced.
+    // 2) Place the card: centered in the lane (height possibly updated), x kept/forced but never
+    //    left of the lane's **cluster** edge (a cluster may sit at x ≠ 0).
     const y = laneCenterY(ctx.engine, laneId, el.height);
-    const x = Math.max(0, a.x !== undefined ? a.x : el.x);
+    const leftFloor = ctx.engine.laneBand(laneId)?.x ?? 0;
+    const x = Math.max(leftFloor, a.x !== undefined ? a.x : el.x);
     if (!ctx.engine.updateElement(a.stepId, { swimlaneId: laneId, x, y }))
       throw new Error('Déplacement impossible.');
     // 3) The shared width must contain the card (otherwise it sticks out right, outside the visible lane).
@@ -824,23 +875,34 @@ const updateSwimlane = defineTool({
 const setLanesWidth = defineTool({
   name: 'setLanesWidth',
   description:
-    'Définit la **largeur partagée de TOUTES les bandes** (unités monde) : élargit le board vers la ' +
-    'droite (chronologie) ou le resserre. La largeur ne descend jamais sous ce qu’il faut pour contenir ' +
-    'les étapes existantes (pas de carte coupée).',
+    'Définit la largeur (unités monde) d’un **groupe de bandes** : élargit le board vers la droite ' +
+    '(chronologie) ou le resserre. Par défaut cible le groupe principal ; `laneRef` (id OU nom d’une ' +
+    'bande) permet de cibler un autre groupe. La largeur ne descend jamais sous ce qu’il faut pour ' +
+    'contenir les étapes du groupe (pas de carte coupée).',
   schema: z.object({
-    width: positiveNum.describe('Largeur partagée des bandes (unités monde)'),
+    width: positiveNum.describe('Largeur du groupe de bandes (unités monde)'),
+    laneRef: z
+      .string()
+      .optional()
+      .describe('Bande d’un groupe à redimensionner (défaut : le groupe principal)'),
   }),
   run(ctx, a) {
-    const steps = ctx.engine.listElements().filter(isStep);
-    // Floor: never cut an existing card (keeps the width needed by the rightmost one).
-    const needed = steps.length ? steps.reduce((m, s) => Math.max(m, s.x + s.width), 0) + 120 : 0;
+    const clusterId = a.laneRef
+      ? resolveClusterId(ctx.engine, a.laneRef)
+      : ctx.engine.listSwimlaneClusters()[0]?.id;
+    if (!clusterId) throw new Error('Aucune bande à redimensionner.');
+    const cluster = ctx.engine.getSwimlaneCluster(clusterId);
+    // Floor: never cut a card in this cluster (relative to the cluster's left edge).
+    const steps = stepsInCluster(ctx.engine, clusterId);
+    const rightEdge = steps.length ? steps.reduce((m, s) => Math.max(m, s.x + s.width), 0) : 0;
+    const needed = steps.length ? rightEdge - (cluster?.x ?? 0) + 120 : 0;
     const width = Math.max(a.width, needed);
-    ctx.engine.setSwimlanesWidth(width);
+    ctx.engine.updateSwimlaneCluster(clusterId, { width });
     return {
       ok: true,
       width: Math.round(width),
       clamped: width !== a.width,
-      message: `↔️ Largeur des bandes : ${Math.round(width)}${width !== a.width ? ' (élargie pour ne pas couper de carte)' : ''}.`,
+      message: `↔️ Largeur du groupe : ${Math.round(width)}${width !== a.width ? ' (élargie pour ne pas couper de carte)' : ''}.`,
     };
   },
 });
@@ -848,11 +910,11 @@ const setLanesWidth = defineTool({
 const reorderSwimlane = defineTool({
   name: 'reorderSwimlane',
   description:
-    'Réordonne une bande (swimlane) **verticalement** (l’ordre de haut en bas). Donne `laneId` (id OU ' +
-    'nom) et SOIT `toIndex` (position finale 0-based, 0 = tout en haut), SOIT `before`/`after` (id OU ' +
-    'nom d’une AUTRE bande, pour la placer juste au-dessus / au-dessous). Les autres bandes se ' +
-    'renumérotent et **les cartes suivent leur bande**. Ex. « mets Système en premier » → toIndex 0 ; ' +
-    '« mets RH au-dessus de Manager » → before="Manager".',
+    'Réordonne une bande (swimlane) **verticalement au sein de son groupe** (l’ordre de haut en bas). ' +
+    'Donne `laneId` (id OU nom) et SOIT `toIndex` (position 0-based DANS le groupe, 0 = tout en haut), ' +
+    'SOIT `before`/`after` (id OU nom d’une AUTRE bande **du même groupe**). Les cartes suivent leur ' +
+    'bande. Pour déplacer une bande dans UN AUTRE groupe, utilise `attachSwimlane`. Ex. « mets Système ' +
+    'en premier » → toIndex 0 ; « mets RH au-dessus de Manager » → before="Manager".',
   schema: z.object({
     laneId: z.string().min(1).describe('Bande à déplacer (id OU nom)'),
     toIndex: z
@@ -860,18 +922,25 @@ const reorderSwimlane = defineTool({
       .int()
       .min(0)
       .optional()
-      .describe('Position finale 0-based (0 = haut). Ignoré si before/after fourni.'),
-    before: z.string().optional().describe('Placer JUSTE AU-DESSUS de cette bande (id OU nom)'),
-    after: z.string().optional().describe('Placer JUSTE AU-DESSOUS de cette bande (id OU nom)'),
+      .describe('Position 0-based dans le groupe (0 = haut). Ignoré si before/after fourni.'),
+    before: z
+      .string()
+      .optional()
+      .describe('Placer JUSTE AU-DESSUS de cette bande du même groupe (id OU nom)'),
+    after: z
+      .string()
+      .optional()
+      .describe('Placer JUSTE AU-DESSOUS de cette bande du même groupe (id OU nom)'),
   }),
   run(ctx, a) {
     const laneId = resolveLaneId(ctx.engine, a.laneId);
     if (!laneId) throw new Error(`Aucune bande « ${a.laneId} ».`);
     const lanes = ctx.engine.listSwimlanes();
-    const name = lanes.find((l) => l.id === laneId)?.name || laneId;
-    // `others` = the lanes WITHOUT the moved one: the engine's target index is the insertion index
-    // in this list (see `engine.reorderSwimlane`), which makes `before`/`after` exact with no off-by-one.
-    const others = lanes.filter((l) => l.id !== laneId);
+    const lane = lanes.find((l) => l.id === laneId)!;
+    const name = lane.name || laneId;
+    // Reorder is WITHIN the lane's own cluster (group). `others` = same-group lanes minus the moved
+    // one; the engine's target index is the insertion index in this list.
+    const others = lanes.filter((l) => l.clusterId === lane.clusterId && l.id !== laneId);
 
     let target: number;
     const ref = a.before ?? a.after;
@@ -881,6 +950,10 @@ const reorderSwimlane = defineTool({
       if (refId === laneId)
         return { ok: false, message: 'Référence = la bande elle-même : inchangé.' };
       const refIdx = others.findIndex((l) => l.id === refId);
+      if (refIdx === -1)
+        throw new Error(
+          `« ${ref} » n’est pas dans le même groupe que « ${name} » — utilise attachSwimlane pour changer de groupe.`,
+        );
       target = a.before !== undefined ? refIdx : refIdx + 1;
     } else if (a.toIndex !== undefined) {
       target = a.toIndex;
@@ -891,7 +964,10 @@ const reorderSwimlane = defineTool({
     const ok = ctx.engine.reorderSwimlane(laneId, target);
     return {
       ok,
-      order: ctx.engine.listSwimlanes().map((l) => l.name || l.id),
+      order: ctx.engine
+        .listSwimlanes()
+        .filter((l) => l.clusterId === lane.clusterId)
+        .map((l) => l.name || l.id),
       message: ok ? `↕️ Bande « ${name} » réordonnée.` : `Ordre inchangé pour « ${name} ».`,
     };
   },
@@ -906,6 +982,108 @@ const deleteSwimlane = defineTool({
     const laneId = resolveLaneId(ctx.engine, a.id);
     if (!laneId || !ctx.engine.removeSwimlane(laneId)) throw new Error(`Aucune bande « ${a.id} ».`);
     return { ok: true, message: `🗑️ Bande supprimée.` };
+  },
+});
+
+const moveSwimlaneGroup = defineTool({
+  name: 'moveSwimlaneGroup',
+  description:
+    'Déplace un GROUPE de bandes liées (cluster) dans le plan : toutes ses bandes ET les cartes ' +
+    'qu’elles contiennent bougent ensemble. Désigne le groupe par `laneRef` (id OU nom d’une bande du ' +
+    'groupe). Donne SOIT un déplacement relatif `dx`/`dy`, SOIT une position absolue `x`/`y` du coin ' +
+    'haut-gauche du bloc.',
+  schema: z.object({
+    laneRef: z.string().min(1).describe('Id OU nom d’une bande du groupe à déplacer'),
+    dx: finiteNum.optional().describe('Déplacement horizontal (unités monde)'),
+    dy: finiteNum.optional().describe('Déplacement vertical (unités monde)'),
+    x: finiteNum.optional().describe('Position absolue x du coin haut-gauche (prime sur dx)'),
+    y: finiteNum.optional().describe('Position absolue y du coin haut-gauche (prime sur dy)'),
+  }),
+  run(ctx, a) {
+    if (a.dx === undefined && a.dy === undefined && a.x === undefined && a.y === undefined)
+      throw new Error('Fournis `dx`/`dy` ou `x`/`y`.');
+    const clusterId = resolveClusterId(ctx.engine, a.laneRef);
+    if (!clusterId) throw new Error(`Aucune bande « ${a.laneRef} ».`);
+    const cluster = ctx.engine.getSwimlaneCluster(clusterId);
+    if (!cluster) throw new Error('Groupe introuvable.');
+    const dx = a.x !== undefined ? a.x - cluster.x : (a.dx ?? 0);
+    const dy = a.y !== undefined ? a.y - cluster.y : (a.dy ?? 0);
+    const targetX = cluster.x + dx;
+    const targetY = cluster.y + dy;
+    // A zero delta means the group is ALREADY at the requested position — a success, not a failure.
+    if (dx === 0 && dy === 0)
+      return {
+        ok: true,
+        x: Math.round(targetX),
+        y: Math.round(targetY),
+        message: `↔️ Groupe déjà en (${Math.round(targetX)}, ${Math.round(targetY)}).`,
+      };
+    ctx.engine.moveCluster(clusterId, dx, dy);
+    // Report the real final position; fall back to the computed target (never a fabricated (0,0)).
+    const now = ctx.engine.getSwimlaneCluster(clusterId);
+    const finalX = Math.round(now?.x ?? targetX);
+    const finalY = Math.round(now?.y ?? targetY);
+    return {
+      ok: true,
+      x: finalX,
+      y: finalY,
+      message: `↔️ Groupe déplacé en (${finalX}, ${finalY}).`,
+    };
+  },
+});
+
+const detachSwimlane = defineTool({
+  name: 'detachSwimlane',
+  description:
+    'Détache une bande de son groupe pour en faire un bloc autonome, posé en (`x`,`y`) (coin ' +
+    'haut-gauche). La bande emporte les cartes qu’elle contient. Sans effet si la bande est déjà ' +
+    'seule dans son groupe.',
+  schema: z.object({
+    laneRef: z.string().min(1).describe('Id OU nom de la bande à détacher'),
+    x: finiteNum.describe('Position x du bloc détaché (unités monde)'),
+    y: finiteNum.describe('Position y du bloc détaché (unités monde)'),
+  }),
+  run(ctx, a) {
+    const laneId = resolveLaneId(ctx.engine, a.laneRef);
+    if (!laneId) throw new Error(`Aucune bande « ${a.laneRef} ».`);
+    const ok = ctx.engine.detachSwimlaneTo(laneId, a.x, a.y);
+    return {
+      ok,
+      message: ok
+        ? `✂️ Bande détachée en (${Math.round(a.x)}, ${Math.round(a.y)}).`
+        : 'Bande déjà seule dans son groupe : inchangé.',
+    };
+  },
+});
+
+const attachSwimlane = defineTool({
+  name: 'attachSwimlane',
+  description:
+    'Ré-aimante une bande dans le groupe d’une autre bande : elle adopte l’alignement (bord gauche + ' +
+    'largeur) du groupe d’accueil et s’y empile. `laneRef` = bande à déplacer ; `targetRef` = une bande ' +
+    'du groupe d’accueil (id OU nom). `atIndex` optionnel = position dans la pile (0 = en haut, défaut = en bas).',
+  schema: z.object({
+    laneRef: z.string().min(1).describe('Id OU nom de la bande à rattacher'),
+    targetRef: z.string().min(1).describe('Id OU nom d’une bande du groupe d’accueil'),
+    atIndex: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe('Position dans la pile du groupe (0 = haut ; défaut = en bas)'),
+  }),
+  run(ctx, a) {
+    const laneId = resolveLaneId(ctx.engine, a.laneRef);
+    if (!laneId) throw new Error(`Aucune bande « ${a.laneRef} ».`);
+    const targetClusterId = resolveClusterId(ctx.engine, a.targetRef);
+    if (!targetClusterId) throw new Error(`Aucune bande « ${a.targetRef} ».`);
+    const ok = ctx.engine.attachSwimlane(laneId, targetClusterId, a.atIndex);
+    return {
+      ok,
+      message: ok
+        ? `🧲 Bande ré-aimantée au groupe de « ${a.targetRef} ».`
+        : 'Rattachement impossible (bande déjà dans ce groupe ?).',
+    };
   },
 });
 
@@ -1008,6 +1186,9 @@ export const TOOLS: readonly ToolDef[] = [
   updateSwimlane,
   setLanesWidth,
   reorderSwimlane,
+  moveSwimlaneGroup,
+  detachSwimlane,
+  attachSwimlane,
   deleteSwimlane,
   addShape,
   updateShape,

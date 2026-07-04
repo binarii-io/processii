@@ -63,6 +63,13 @@ export interface BoardCanvasProps {
 const SNAP_SCREEN_THRESHOLD = 6;
 /** Tolerance (screen px) to grab a swimlane edge. */
 const LANE_EDGE_TOLERANCE = 6;
+/**
+ * Magnetic threshold (screen px) for a dragged lane to attach to / stay in a cluster. Larger than
+ * the plain snap so lane attach feels "sticky"; beyond it the lane detaches into its own cluster.
+ */
+const LANE_MAGNET_THRESHOLD = 28;
+/** Width (screen px) of the cluster **move grip** on a cluster's left edge (drag = move the block). */
+const LANE_GRIP_WIDTH = 12;
 
 /** CSS cursor per transform-handle kind. */
 const HANDLE_CURSOR: Record<HandleKind, string> = {
@@ -95,23 +102,53 @@ type Interaction =
     }
   | { readonly mode: 'rotating'; readonly id: string }
   | { readonly mode: 'laneResizeH'; readonly laneId: string }
-  | { readonly mode: 'laneResizeW' }
-  | { readonly mode: 'laneReorder'; readonly laneId: string; readonly grabDy: number }
+  | { readonly mode: 'laneResizeW'; readonly clusterId: string }
+  | {
+      // Header drag of a single lane: preview only, committed on release as reorder / attach / detach.
+      readonly mode: 'laneMove';
+      readonly laneId: string;
+      readonly clusterId: string;
+      readonly grabDx: number;
+      readonly grabDy: number;
+    }
+  | {
+      // Grip drag of a whole cluster: live translation (lanes + contents) with edge snapping.
+      readonly mode: 'clusterMove';
+      readonly clusterId: string;
+      readonly startWorld: Point;
+      readonly startBounds: BoundingBox;
+      readonly otherBounds: readonly BoundingBox[];
+      applied: Point;
+    }
   | { readonly mode: 'marquee'; readonly startWorld: Point; readonly additive: boolean };
 
 /**
- * Index (0-based) of the lane whose **vertical band** contains the world ordinate `y`; above
- * everything → first lane, below → last one. `-1` when there is no lane. Used by the reorder
- * drag: the dragged lane takes the hovered slot.
+ * Drop slot for a cursor at world ordinate `y` over a cluster's `lanes` (in order, stacked from
+ * `clusterTop`): the hovered lane's top half inserts before it, the bottom half after. Returns the
+ * insertion `boundary` (0..n) and the world `dropY` (top of that boundary, for the drop line).
  */
-function laneIndexAtWorldY(lanes: readonly { readonly height: number }[], y: number): number {
-  if (lanes.length === 0) return -1;
-  let top = 0;
-  for (let i = 0; i < lanes.length; i += 1) {
-    top += lanes[i]!.height;
-    if (y < top) return i;
+function dropSlot(
+  lanes: readonly { readonly height: number }[],
+  clusterTop: number,
+  y: number,
+): { boundary: number; dropY: number } {
+  const tops: number[] = [];
+  let acc = clusterTop;
+  for (const lane of lanes) {
+    tops.push(acc);
+    acc += lane.height;
   }
-  return lanes.length - 1;
+  let hovered = 0;
+  for (let i = 0; i < lanes.length; i += 1) if (y >= tops[i]!) hovered = i;
+  const boundary =
+    lanes.length === 0
+      ? 0
+      : y < tops[hovered]! + lanes[hovered]!.height / 2
+        ? hovered
+        : hovered + 1;
+  let dropY = clusterTop;
+  for (let i = 0; i < boundary; i += 1) dropY += lanes[i]!.height;
+  return { boundary, dropY };
 }
 
 function screenPoint(canvas: HTMLCanvasElement, clientX: number, clientY: number): Point {
@@ -284,18 +321,23 @@ export function BoardCanvas({
   // Ids intersected by the in-progress marquee (selection preview before release).
   const marqueeHits = useRef<string[]>([]);
   const guides = useRef<{ x?: number; y?: number } | undefined>(undefined);
-  // Preview of the **lane reorder drag**: ghost (translucent lane following the cursor) +
-  // drop line (where the lane will land). `targetIndex`/`fromIndex` are used by the commit on release.
+  // Preview of the **lane header drag**: ghost (translucent lane following the cursor, in world
+  // coords) + optional drop line (reorder/attach) + the action to commit on release.
   const laneDrag = useRef<
     | {
-        ghostTop: number;
-        height: number;
-        dropY: number;
-        targetIndex: number;
-        fromIndex: number;
+        ghost: BoundingBox;
+        dropLine?: { x0: number; x1: number; y: number };
+        commit:
+          | { kind: 'reorder'; laneId: string; targetIndex: number }
+          | { kind: 'attach'; laneId: string; targetClusterId: string; atIndex: number }
+          | { kind: 'detach'; laneId: string; x: number; y: number }
+          | { kind: 'none' };
       }
     | undefined
   >(undefined);
+  // Cluster whose left-edge move grip is currently hovered → the grip is revealed only then (kept in
+  // a ref: the canvas is redrawn directly, no React re-render on every hover move).
+  const hoveredGripCluster = useRef<string | null>(null);
   const spaceHeld = useRef(false);
   const [percent, setPercent] = useState(100);
   const [editing, setEditing] = useState<{
@@ -377,10 +419,13 @@ export function BoardCanvas({
     // Base = HiDPI scale; all rendering then happens in **CSS** coordinates (crisp on Retina).
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const surface = ctx as unknown as CanvasLike;
+    // Build the theme color resolver **once** per frame (each call runs getComputedStyle) and reuse
+    // it for the board, the grip overlay and the lane-drag overlay below.
+    const resolveColor = makeColorResolver();
     renderToCanvas(surface, engine.toRenderModel(), {
       clear: { width: size.w, height: size.h },
       viewport: vpRef.current,
-      resolveColor: makeColorResolver(),
+      resolveColor,
       // Semi-transparent gray: visible on light AND dark backgrounds (passes through the resolver as-is).
       dotGrid: { color: 'rgba(130, 130, 140, 0.45)' },
       ...(marquee.current ? { marquee: marquee.current } : {}),
@@ -399,28 +444,63 @@ export function BoardCanvas({
       // the edited element itself (otherwise its canvas border shows under the overlay).
       ...(editing ? { suppressSelection: true, hiddenElementId: editing.id } : {}),
     });
-    // **Lane reorder drag** overlay: drawn ON TOP of the board, in screen coordinates (we re-assert
-    // the HiDPI transform because the renderer may have changed it). Ghost = translucent footprint
-    // of the dragged lane following the cursor; drop line = boundary where it will land.
+    // Cluster **move grip**: an accent bar on the left edge of the **hovered** cluster (drag = move
+    // the whole linked block), plus a subtle outline of that block so the user sees the set of lanes
+    // that will move. Revealed on hover only; hidden during a drag (the ghost is the focus then).
+    if (
+      !laneDrag.current &&
+      interaction.current.mode !== 'clusterMove' &&
+      hoveredGripCluster.current
+    ) {
+      const hovered = engine
+        .clusterBounds()
+        .find((c) => c.cluster.id === hoveredGripCluster.current);
+      if (hovered) {
+        const vp = vpRef.current;
+        const accent = resolveColor('accent');
+        const top = worldToScreen(vp, { x: hovered.bounds.x, y: hovered.bounds.y });
+        const bot = worldToScreen(vp, {
+          x: hovered.bounds.x + hovered.bounds.width,
+          y: hovered.bounds.y + hovered.bounds.height,
+        });
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.save();
+        // Outline of the whole block that will move.
+        ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(top.x, top.y, bot.x - top.x, bot.y - top.y);
+        // The grip bar itself.
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle = accent;
+        ctx.fillRect(top.x, top.y, LANE_GRIP_WIDTH, bot.y - top.y);
+        ctx.restore();
+      }
+    }
+    // **Lane header drag** overlay: ghost (translucent footprint of the dragged lane following the
+    // cursor, dashed accent border) + optional drop line (reorder/attach slot). Detach shows the
+    // ghost floating with no drop line.
     const ld = laneDrag.current;
     if (ld) {
       const vp = vpRef.current;
-      const accent = makeColorResolver()('accent');
-      const laneW = engine.getSwimlanesWidth();
+      const accent = resolveColor('accent');
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.save();
-      // Drop line (full lane width).
-      const dl = worldToScreen(vp, { x: 0, y: ld.dropY });
-      const dr = worldToScreen(vp, { x: laneW, y: ld.dropY });
-      ctx.strokeStyle = accent;
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(dl.x, dl.y);
-      ctx.lineTo(dr.x, dr.y);
-      ctx.stroke();
-      // Ghost: translucent footprint of the lane, following the cursor (dashed accent border).
-      const g0 = worldToScreen(vp, { x: 0, y: ld.ghostTop });
-      const g1 = worldToScreen(vp, { x: laneW, y: ld.ghostTop + ld.height });
+      if (ld.dropLine) {
+        const dl = worldToScreen(vp, { x: ld.dropLine.x0, y: ld.dropLine.y });
+        const dr = worldToScreen(vp, { x: ld.dropLine.x1, y: ld.dropLine.y });
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(dl.x, dl.y);
+        ctx.lineTo(dr.x, dr.y);
+        ctx.stroke();
+      }
+      const g0 = worldToScreen(vp, { x: ld.ghost.x, y: ld.ghost.y });
+      const g1 = worldToScreen(vp, {
+        x: ld.ghost.x + ld.ghost.width,
+        y: ld.ghost.y + ld.ghost.height,
+      });
       ctx.globalAlpha = 0.18;
       ctx.fillStyle = accent;
       ctx.fillRect(g0.x, g0.y, g1.x - g0.x, g1.y - g0.y);
@@ -519,6 +599,22 @@ export function BoardCanvas({
     return [...elements, ...engine.swimlaneBounds()];
   };
 
+  /** Cluster whose inner **left-edge move grip** is under the world point, or `null`. */
+  const gripClusterAtPoint = (world: Point, zoom: number): string | null => {
+    const grip = LANE_GRIP_WIDTH / zoom;
+    for (const { cluster, bounds } of engine.clusterBounds()) {
+      if (
+        world.x >= bounds.x &&
+        world.x <= bounds.x + grip &&
+        world.y >= bounds.y &&
+        world.y <= bounds.y + bounds.height
+      ) {
+        return cluster.id;
+      }
+    }
+    return null;
+  };
+
   /** Cursor to display on hover (action available under the pointer). */
   const cursorFor = (world: Point, zoom: number): string => {
     if (spaceHeld.current) return 'grab';
@@ -532,10 +628,72 @@ export function BoardCanvas({
     }
     const edge = engine.laneEdgeAtPoint(world, LANE_EDGE_TOLERANCE / zoom);
     if (edge) return edge.edge === 'right' ? 'ew-resize' : 'ns-resize';
-    // Lane header → draggable (drag to reorder the lanes).
+    // Cluster grip → move the whole block; lane header → drag the single lane.
+    if (gripClusterAtPoint(world, zoom)) return 'grab';
     if (engine.laneHeaderAtPoint(world)) return 'grab';
     if (hitTest(engine.listElements(), world, DEFAULT_HIT_TOLERANCE / zoom)) return 'move';
     return 'default';
+  };
+
+  /**
+   * Disambiguates a **lane header drag** into a preview (`laneDrag`): the ghost follows the cursor,
+   * and the action is one of reorder (still over its own cluster), attach (near another cluster's
+   * band, magnetic), or detach (far from every cluster → its own new block). Preview only; the
+   * board is mutated on release.
+   */
+  const computeLaneDrag = (
+    state: { laneId: string; clusterId: string; grabDx: number; grabDy: number },
+    world: Point,
+  ): NonNullable<typeof laneDrag.current> => {
+    const magnet = LANE_MAGNET_THRESHOLD / vpRef.current.zoom;
+    const lanes = engine.listSwimlanes();
+    const laneHeight = lanes.find((l) => l.id === state.laneId)?.height ?? 160;
+    const ownWidth =
+      engine.getSwimlaneCluster(state.clusterId)?.width ?? engine.getSwimlanesWidth();
+    const gx = world.x - state.grabDx; // ghost top-left (visual, follows the cursor)
+    const gy = world.y - state.grabDy;
+
+    // Candidate cluster under the **cursor** (± magnet on both axes); nearest wins, own on tie.
+    let best: { id: string; bounds: BoundingBox; width: number; dist: number } | null = null;
+    for (const { cluster, bounds } of engine.clusterBounds()) {
+      const inX = world.x >= bounds.x - magnet && world.x <= bounds.x + bounds.width + magnet;
+      if (!inX) continue;
+      if (world.y < bounds.y - magnet || world.y > bounds.y + bounds.height + magnet) continue;
+      const dist =
+        world.y < bounds.y
+          ? bounds.y - world.y
+          : world.y > bounds.y + bounds.height
+            ? world.y - (bounds.y + bounds.height)
+            : 0;
+      if (!best || dist < best.dist || (dist === best.dist && cluster.id === state.clusterId)) {
+        best = { id: cluster.id, bounds, width: cluster.width, dist };
+      }
+    }
+
+    if (!best) {
+      // Detach: floats where dropped (keeps the source width), no drop line.
+      return {
+        ghost: { x: gx, y: gy, width: ownWidth, height: laneHeight },
+        commit: { kind: 'detach', laneId: state.laneId, x: gx, y: gy },
+      };
+    }
+
+    // Drop slot among the target cluster's lanes (at their real positions).
+    const clusterLanes = lanes.filter((l) => l.clusterId === best!.id);
+    const { boundary, dropY } = dropSlot(clusterLanes, best.bounds.y, world.y);
+    const ghost = { x: best.bounds.x, y: gy, width: best.width, height: laneHeight };
+    const dropLine = { x0: best.bounds.x, x1: best.bounds.x + best.width, y: dropY };
+    if (best.id === state.clusterId) {
+      // Reorder within own cluster: adjust the index for the dragged lane's own removal.
+      const fromIndex = clusterLanes.findIndex((l) => l.id === state.laneId);
+      const targetIndex = boundary <= fromIndex ? boundary : boundary - 1;
+      return { ghost, dropLine, commit: { kind: 'reorder', laneId: state.laneId, targetIndex } };
+    }
+    return {
+      ghost,
+      dropLine,
+      commit: { kind: 'attach', laneId: state.laneId, targetClusterId: best.id, atIndex: boundary },
+    };
   };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>): void => {
@@ -543,6 +701,7 @@ export function BoardCanvas({
     if (!canvas) return;
     canvas.setPointerCapture?.(event.pointerId);
     setHoveredId(null); // hides the connection handles during a gesture
+    hoveredGripCluster.current = null; // hide the hover grip once a gesture begins
     const screen = screenPoint(canvas, event.clientX, event.clientY);
 
     if (event.button === 1 || spaceHeld.current) {
@@ -572,17 +731,46 @@ export function BoardCanvas({
       }
     }
 
-    // 2) Swimlane edge → mouse-driven resizing (before element selection).
+    // 2) Swimlane edge → mouse-driven resizing (before element selection). Right edge = the
+    //    cluster's shared width; bottom edge = that lane's height.
     const edge = engine.laneEdgeAtPoint(world, LANE_EDGE_TOLERANCE / zoom);
     if (edge) {
       interaction.current =
         edge.edge === 'right'
-          ? { mode: 'laneResizeW' }
+          ? { mode: 'laneResizeW', clusterId: edge.clusterId! }
           : { mode: 'laneResizeH', laneId: edge.laneId! };
       return;
     }
 
-    // 3) Selection / move / marquee.
+    // 3) Cluster **move grip** (left edge) → drag the whole linked block. Before element hit-test
+    //    (it sits at the very left) and before the lane header (which starts at the same x).
+    const gripId = gripClusterAtPoint(world, zoom);
+    if (gripId) {
+      const cb = engine.clusterBounds().find((c) => c.cluster.id === gripId);
+      if (cb) {
+        onSelectLane?.(null);
+        engine.clearSelection();
+        interaction.current = {
+          mode: 'clusterMove',
+          clusterId: gripId,
+          startWorld: world,
+          startBounds: cb.bounds,
+          otherBounds: engine
+            .clusterBounds()
+            .filter((c) => c.cluster.id !== gripId)
+            .map((c) => c.bounds),
+          applied: { x: 0, y: 0 },
+        };
+        marquee.current = undefined;
+        guides.current = undefined;
+        laneDrag.current = undefined;
+        onChange?.();
+        draw();
+        return;
+      }
+    }
+
+    // 4) Selection / move / marquee.
     const tolerance = DEFAULT_HIT_TOLERANCE / zoom;
     const hit = hitTest(engine.listElements(), world, tolerance);
     if (hit) {
@@ -606,15 +794,19 @@ export function BoardCanvas({
     } else {
       const laneId = engine.laneHeaderAtPoint(world);
       if (laneId) {
+        const lane = engine.listSwimlanes().find((l) => l.id === laneId);
+        const band = engine.laneBand(laneId);
         engine.clearSelection();
         onSelectLane?.(laneId);
-        // Selects the lane AND arms the **reorder drag**: a plain click (no movement) only
-        // selects; dragging shows a ghost + a drop line, and reorders on release.
-        // `grabDy` = cursor↔lane-top offset, so the ghost follows naturally.
+        // Selects the lane AND arms the **header drag**: a plain click (no movement) only selects;
+        // dragging previews reorder / attach / detach and commits on release. `grabD*` = cursor↔
+        // band-top-left offset, so the ghost follows naturally.
         interaction.current = {
-          mode: 'laneReorder',
+          mode: 'laneMove',
           laneId,
-          grabDy: world.y - engine.laneTop(laneId),
+          clusterId: lane?.clusterId ?? '',
+          grabDx: world.x - (band?.x ?? 0),
+          grabDy: world.y - (band?.y ?? 0),
         };
       } else {
         onSelectLane?.(null);
@@ -639,6 +831,12 @@ export function BoardCanvas({
 
     if (state.mode === 'idle') {
       canvas.style.cursor = cursorFor(world, vpRef.current.zoom);
+      // Hover → reveal the cluster move grip when over its left-edge zone (redraw on change only).
+      const gripId = gripClusterAtPoint(world, vpRef.current.zoom);
+      if (gripId !== hoveredGripCluster.current) {
+        hoveredGripCluster.current = gripId;
+        draw();
+      }
       // Hover → connection handles on the box element under the pointer.
       const hit = hitTest(engine.listElements(), world, DEFAULT_HIT_TOLERANCE / vpRef.current.zoom);
       const id = hit && hasHandles(hit) ? hit.id : null;
@@ -682,35 +880,45 @@ export function BoardCanvas({
     }
 
     if (state.mode === 'laneResizeW') {
-      engine.setSwimlanesWidth(Math.max(200, world.x));
+      const cluster = engine.getSwimlaneCluster(state.clusterId);
+      if (cluster)
+        engine.updateSwimlaneCluster(state.clusterId, {
+          width: Math.max(200, world.x - cluster.x),
+        });
+      engine.refreshConnectors();
       return;
     }
 
-    if (state.mode === 'laneReorder') {
+    if (state.mode === 'laneMove') {
       canvas.style.cursor = 'grabbing';
-      const lanes = engine.listSwimlanes();
-      const fromIndex = lanes.findIndex((l) => l.id === state.laneId);
-      if (fromIndex !== -1 && lanes.length > 0) {
-        const dragged = lanes[fromIndex]!;
-        // Hovered lane + top/bottom half → **insertion boundary** (0..N). `dropY` = top of that
-        // boundary (sum of the heights above). `targetIndex` = FINAL index passed to
-        // reorderSwimlane (adjusted for the removal of the dragged lane). We do NOT mutate the
-        // board here: preview only; the actual move is committed on release.
-        const overIndex = laneIndexAtWorldY(lanes, world.y);
-        let overTop = 0;
-        for (let i = 0; i < overIndex; i += 1) overTop += lanes[i]!.height;
-        const dropAbove = world.y < overTop + lanes[overIndex]!.height / 2;
-        const boundary = dropAbove ? overIndex : overIndex + 1;
-        let dropY = 0;
-        for (let i = 0; i < boundary; i += 1) dropY += lanes[i]!.height;
-        laneDrag.current = {
-          ghostTop: world.y - state.grabDy,
-          height: dragged.height,
-          dropY,
-          targetIndex: boundary <= fromIndex ? boundary : boundary - 1,
-          fromIndex,
-        };
-      }
+      laneDrag.current = computeLaneDrag(state, world);
+      draw();
+      return;
+    }
+
+    if (state.mode === 'clusterMove') {
+      const raw = { x: world.x - state.startWorld.x, y: world.y - state.startWorld.y };
+      const proposed: BoundingBox = {
+        x: state.startBounds.x + raw.x,
+        y: state.startBounds.y + raw.y,
+        width: state.startBounds.width,
+        height: state.startBounds.height,
+      };
+      const snap = snapMove(
+        proposed,
+        state.otherBounds,
+        SNAP_SCREEN_THRESHOLD / vpRef.current.zoom,
+      );
+      const target = { x: raw.x + snap.dx, y: raw.y + snap.dy };
+      engine.moveCluster(state.clusterId, target.x - state.applied.x, target.y - state.applied.y);
+      state.applied = target;
+      guides.current =
+        snap.guideX !== undefined || snap.guideY !== undefined
+          ? {
+              ...(snap.guideX !== undefined ? { x: snap.guideX } : {}),
+              ...(snap.guideY !== undefined ? { y: snap.guideY } : {}),
+            }
+          : undefined;
       draw();
       return;
     }
@@ -763,9 +971,19 @@ export function BoardCanvas({
         state.additive ? Array.from(new Set([...engine.getSelection(), ...inside])) : inside,
       );
     }
-    // Lane reordering: the move is **committed** on release (no-op if the index is unchanged).
-    if (state.mode === 'laneReorder' && laneDrag.current) {
-      engine.reorderSwimlane(state.laneId, laneDrag.current.targetIndex);
+    // Lane header drag: the reorder / attach / detach is **committed** on release (no-op if the
+    // gesture never moved — a plain header click only selects).
+    if (state.mode === 'laneMove' && laneDrag.current) {
+      const c = laneDrag.current.commit;
+      if (c.kind === 'reorder') engine.reorderSwimlane(c.laneId, c.targetIndex);
+      else if (c.kind === 'attach') engine.attachSwimlane(c.laneId, c.targetClusterId, c.atIndex);
+      else if (c.kind === 'detach') engine.detachSwimlaneTo(c.laneId, c.x, c.y);
+    }
+    // Cluster grip with **no drag** = a plain click: select the lane under the grip rather than
+    // leaving the block deselected (the grip zone shadows the header's left edge, which used to
+    // select). A real drag (applied != 0) already moved the cluster live and must not re-select.
+    if (state.mode === 'clusterMove' && state.applied.x === 0 && state.applied.y === 0) {
+      onSelectLane?.(engine.laneAtPoint(state.startWorld) ?? null);
     }
     marquee.current = undefined;
     marqueeHits.current = [];
@@ -1211,7 +1429,13 @@ export function BoardCanvas({
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
-        onPointerLeave={() => awareness && publishCursor(awareness, null)}
+        onPointerLeave={() => {
+          if (awareness) publishCursor(awareness, null);
+          if (hoveredGripCluster.current) {
+            hoveredGripCluster.current = null; // hide the grip when the cursor leaves the surface
+            draw();
+          }
+        }}
         onDoubleClick={handleDoubleClick}
         onKeyDown={handleKeyDown}
         className="block touch-none bg-[#f4f4f5] outline-none dark:bg-[#0c0c0e]"

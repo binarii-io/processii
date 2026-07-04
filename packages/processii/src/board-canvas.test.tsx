@@ -230,16 +230,16 @@ describe('BoardCanvas — process board', () => {
     expect(engine.listSwimlanes()[0]?.height).toBe(240);
   });
 
-  it('dragging the right edge changes the shared lane width', () => {
+  it("dragging the right edge changes the cluster's width", () => {
     const engine = createEngine({ clientId: 1 });
     engine.addSwimlane({ id: 'l1', name: 'X', order: 0, color: 'green', height: 160 });
-    engine.setSwimlanesWidth(300);
+    engine.setSwimlanesWidth(300); // legacy cluster starts 300 wide (x = 0)
     const { getByLabelText } = render(<BoardCanvas engine={engine} width={600} height={400} />);
     const canvas = getByLabelText('Surface de dessin du whiteboard');
     fireEvent.pointerDown(canvas, { clientX: 300, clientY: 50, button: 0, pointerId: 1 });
     fireEvent.pointerMove(canvas, { clientX: 420, clientY: 50, button: 0, pointerId: 1 });
     fireEvent.pointerUp(canvas, { clientX: 420, clientY: 50, button: 0, pointerId: 1 });
-    expect(engine.getSwimlanesWidth()).toBe(420);
+    expect(engine.listSwimlaneClusters()[0]?.width).toBe(420);
   });
 
   it('dragging a lane header reorders it (drag-and-drop)', () => {
@@ -274,6 +274,85 @@ describe('BoardCanvas — process board', () => {
     fireEvent.pointerDown(canvas, { clientX: 20, clientY: 10, button: 0, pointerId: 1 });
     fireEvent.pointerUp(canvas, { clientX: 20, clientY: 10, button: 0, pointerId: 1 });
     expect(selected).toBe('l1');
+  });
+
+  it('dragging the cluster grip moves the whole block and its content', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addSwimlane({ id: 'l1', order: 0, height: 200 });
+    engine.updateSwimlaneCluster('cluster:legacy', { x: 0, y: 0, width: 1000 });
+    engine.addElement(
+      { kind: 'step', id: 's', x: 20, y: 50, width: 40, height: 30 },
+      { select: false },
+    );
+    const { getByLabelText } = render(<BoardCanvas engine={engine} width={600} height={500} />);
+    const canvas = getByLabelText('Surface de dessin du whiteboard');
+    // Grabs the left-edge grip (x∈[0,12]) and drags the block by (100, 30).
+    fireEvent.pointerDown(canvas, { clientX: 6, clientY: 50, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(canvas, { clientX: 106, clientY: 80, button: 0, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 106, clientY: 80, button: 0, pointerId: 1 });
+    expect(engine.listSwimlaneClusters()[0]).toMatchObject({ x: 100, y: 30 });
+    expect(engine.board.getElement('s')).toMatchObject({ x: 120, y: 80 });
+  });
+
+  it('dragging a lane header far away detaches it into its own cluster', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.setSwimlanesWidth(300);
+    engine.addSwimlane({ id: 'l1', order: 0, height: 100 }); // 0..100
+    engine.addSwimlane({ id: 'l2', order: 1, height: 100 }); // 100..200
+    const { getByLabelText } = render(<BoardCanvas engine={engine} width={600} height={500} />);
+    const canvas = getByLabelText('Surface de dessin du whiteboard');
+    // Grabs the l2 header and drags it well to the right of the 300-wide block → detach.
+    fireEvent.pointerDown(canvas, { clientX: 40, clientY: 110, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(canvas, { clientX: 900, clientY: 110, button: 0, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 900, clientY: 110, button: 0, pointerId: 1 });
+    expect(engine.listSwimlaneClusters()).toHaveLength(2);
+    expect(engine.listSwimlanes().find((l) => l.id === 'l2')?.clusterId).toBe('cluster-of:l2');
+  });
+
+  it('a plain click on the cluster grip selects the lane under it (does not just deselect)', () => {
+    let selected: string | null = 'sentinel';
+    const engine = createEngine({ clientId: 1 });
+    engine.addSwimlane({ id: 'l1', order: 0, height: 100 }); // 0..100
+    engine.addSwimlane({ id: 'l2', order: 1, height: 100 }); // 100..200
+    const { getByLabelText } = render(
+      <BoardCanvas
+        engine={engine}
+        width={600}
+        height={500}
+        onSelectLane={(id) => {
+          selected = id;
+        }}
+      />,
+    );
+    const canvas = getByLabelText('Surface de dessin du whiteboard');
+    // Click (no drag) in the grip strip (x∈[0,12]) at l2's row → selects l2.
+    fireEvent.pointerDown(canvas, { clientX: 6, clientY: 150, button: 0, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 6, clientY: 150, button: 0, pointerId: 1 });
+    expect(selected).toBe('l2');
+  });
+
+  it('dragging a detached lane onto another cluster re-attaches it (magnetic)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addSwimlane({ id: 'a1', clusterId: 'A', order: 0, height: 100 });
+    engine.addSwimlane({ id: 'a2', clusterId: 'A', order: 1, height: 100 });
+    engine.addSwimlaneCluster({ id: 'A', x: 0, y: 0, width: 300 });
+    engine.addSwimlane({ id: 'l3', clusterId: 'X', order: 0, height: 100 });
+    engine.addSwimlaneCluster({ id: 'X', x: 600, y: 600, width: 300 });
+    const { getByLabelText } = render(<BoardCanvas engine={engine} width={1000} height={800} />);
+    const canvas = getByLabelText('Surface de dessin du whiteboard');
+    // Grabs l3's header (at cluster X) and drops it on cluster A's bottom edge → attach below a2.
+    fireEvent.pointerDown(canvas, { clientX: 620, clientY: 610, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(canvas, { clientX: 150, clientY: 205, button: 0, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 150, clientY: 205, button: 0, pointerId: 1 });
+    const l3 = engine.listSwimlanes().find((l) => l.id === 'l3');
+    expect(l3?.clusterId).toBe('A');
+    expect(l3?.order).toBe(2);
+    expect(
+      engine
+        .listSwimlaneClusters()
+        .map((c) => c.id)
+        .sort(),
+    ).toEqual(['A']);
   });
 });
 

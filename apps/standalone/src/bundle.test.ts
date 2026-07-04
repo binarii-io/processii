@@ -32,6 +32,7 @@ function doc(id: string, name: string, elementIds: string[]): BundleDocument {
         markers: [],
       })),
       swimlanes: [],
+      swimlaneClusters: [],
       swimlanesWidth: 2000,
       agentGroups: [],
     },
@@ -172,6 +173,7 @@ describe('bundle — sub-process & hierarchy', () => {
       },
     ],
     swimlanes: [],
+    swimlaneClusters: [],
     swimlanesWidth: 2000,
     agentGroups: [],
   });
@@ -179,6 +181,7 @@ describe('bundle — sub-process & hierarchy', () => {
     version: 1 as const,
     elements: [],
     swimlanes: [],
+    swimlaneClusters: [],
     swimlanesWidth: 2000,
     agentGroups: [],
   });

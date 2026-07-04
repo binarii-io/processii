@@ -66,6 +66,24 @@ describe('board-summary — geometry', () => {
     expect(step.misplaced).toBe(true);
     expect(step.actualLaneId).toBe('l2');
   });
+
+  it('does NOT flag a correctly-placed card when its lane sits in a moved cluster (x ≠ 0)', () => {
+    const engine = engineWithLane();
+    engine.updateSwimlaneCluster('cluster:legacy', { x: 1000, y: 0, width: 600 });
+    const band = engine.laneBand('l1')!; // now at x=1000
+    addStep(engine, { id: 's1', x: band.x + 20, y: band.y + 10, swimlaneId: 'l1' });
+    const step = summarizeBoard(engine).steps.find((p) => p.id === 's1')!;
+    expect(step.misplaced).toBeUndefined(); // inside its real band → not flagged (was a false positive)
+  });
+
+  it('exposes clusterId, left and width per lane', () => {
+    const engine = engineWithLane();
+    engine.updateSwimlaneCluster('cluster:legacy', { x: 300, y: 0, width: 500 });
+    const lane = summarizeBoard(engine).swimlanes.find((l) => l.id === 'l1')!;
+    expect(lane.clusterId).toBe('cluster:legacy');
+    expect(lane.left).toBe(300);
+    expect(lane.width).toBe(500);
+  });
 });
 
 describe('board-summary — rendu texte', () => {
@@ -73,7 +91,7 @@ describe('board-summary — rendu texte', () => {
     const engine = engineWithLane();
     addStep(engine, { id: 's1', x: 300, y: 20, swimlaneId: 'l1' });
     const text = renderSummaryText(summarizeBoard(engine));
-    expect(text).toContain('Largeur partagée des bandes');
+    expect(text).toContain('Bandes (swimlanes)');
     expect(text).toContain('hauteur 160');
     expect(text).toMatch(/s1 .*x 300, y 20, 200×120/);
   });
