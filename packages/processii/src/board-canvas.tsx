@@ -24,6 +24,7 @@ import type { BoundingBox, WhiteboardEngine } from './engine.js';
 import type { WhiteboardElement } from './scene.js';
 import type { CrdtAwareness } from './crdt/index.js';
 import { StylePanel } from './style-panel.js';
+import { ZoomControl } from './zoom-control.js';
 import {
   observePresence,
   publishCursor,
@@ -44,6 +45,13 @@ import {
  * lane selection (header click), double-click = text/name editing, wheel pan / ⌘-wheel zoom,
  * space/middle-click pan, keyboard undo/redo, Delete/Escape. The **cursor** reflects the available action.
  */
+/** Imperative zoom actions surfaced by {@link BoardCanvas} through `onZoomApi`. */
+export interface ZoomApi {
+  readonly zoomIn: () => void;
+  readonly zoomOut: () => void;
+  readonly reset: () => void;
+}
+
 export interface BoardCanvasProps {
   readonly engine: WhiteboardEngine;
   /** Fixed size (tests); otherwise the canvas fills its container. */
@@ -65,6 +73,12 @@ export interface BoardCanvasProps {
    * state only — never persisted or shared.
    */
   readonly onViewportChange?: (viewport: Viewport, size: Size) => void;
+  /** Hide the built-in zoom control so the host can render its own {@link ZoomControl} (e.g. inside
+   *  a floating bottom bar), wired via {@link onZoomApi}. */
+  readonly hideZoomControl?: boolean;
+  /** Receives the zoom actions once available (and again when they change, e.g. on canvas resize),
+   *  so a host can drive an external {@link ZoomControl}. */
+  readonly onZoomApi?: (api: ZoomApi) => void;
 }
 
 /** Snapping threshold, in screen pixels (converted to world units via the zoom). */
@@ -308,6 +322,8 @@ export function BoardCanvas({
   onNavigateSubprocess,
   initialZoom = 1,
   onViewportChange,
+  hideZoomControl,
+  onZoomApi,
 }: BoardCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -395,6 +411,20 @@ export function BoardCanvas({
   const resetView = useCallback((): void => {
     setViewport({ x: size.w / 2, y: size.h / 2, zoom: initialZoom });
   }, [setViewport, size.w, size.h, initialZoom]);
+
+  // Zoom in/out around the canvas centre. Exposed to the host (`onZoomApi`) so an external zoom
+  // control can drive them; also used by the built-in one.
+  const zoomIn = useCallback(
+    () => setViewport(zoomAt(vpRef.current, 1.2, { x: size.w / 2, y: size.h / 2 })),
+    [setViewport, size.w, size.h],
+  );
+  const zoomOut = useCallback(
+    () => setViewport(zoomAt(vpRef.current, 1 / 1.2, { x: size.w / 2, y: size.h / 2 })),
+    [setViewport, size.w, size.h],
+  );
+  useEffect(() => {
+    onZoomApi?.({ zoomIn, zoomOut, reset: resetView });
+  }, [onZoomApi, zoomIn, zoomOut, resetView]);
 
   // Responsive size: measures the container (unless a fixed size is imposed by the tests).
   useEffect(() => {
@@ -1305,8 +1335,6 @@ export function BoardCanvas({
     }
   };
 
-  const zoomPivot = { x: size.w / 2, y: size.h / 2 };
-
   // Connection handles (N/E/S/W) around the hovered element (screen coords, follows pan/zoom).
   const connectHandles = ((): { dir: ConnectDir; fromId: string; x: number; y: number }[] => {
     if (!hoveredId || editing || connectLine) return [];
@@ -1597,36 +1625,15 @@ export function BoardCanvas({
             );
           })()
         : null}
-      <div
-        className="absolute bottom-2 right-2 flex items-center gap-1 rounded-md border border-border bg-surface px-1 py-0.5 text-xs text-text shadow-sm"
-        role="group"
-        aria-label="Contrôles de zoom"
-      >
-        <button
-          type="button"
-          className="px-1.5 py-0.5 hover:text-accent"
-          aria-label="Dézoomer"
-          onClick={() => setViewport(zoomAt(vpRef.current, 1 / 1.2, zoomPivot))}
-        >
-          −
-        </button>
-        <button
-          type="button"
-          className="min-w-[3rem] px-1 py-0.5 tabular-nums hover:text-accent"
-          aria-label="Réinitialiser le zoom"
-          onClick={resetView}
-        >
-          {percent}%
-        </button>
-        <button
-          type="button"
-          className="px-1.5 py-0.5 hover:text-accent"
-          aria-label="Zoomer"
-          onClick={() => setViewport(zoomAt(vpRef.current, 1.2, zoomPivot))}
-        >
-          +
-        </button>
-      </div>
+      {!hideZoomControl && (
+        <ZoomControl
+          className="absolute bottom-[26px] right-2 shadow-sm"
+          percent={percent}
+          onZoomOut={zoomOut}
+          onReset={resetView}
+          onZoomIn={zoomIn}
+        />
+      )}
     </div>
   );
 }

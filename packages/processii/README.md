@@ -62,6 +62,14 @@ Common fields: `id`, `angle`, `stroke`, `fill`, `strokeWidth`, `opacity`, `z` (r
 (`text`, `accent`, …) or a free (imported) value. Every input goes through zod (`parseElement`,
 `parseScene`) → typed `WhiteboardParseError` when invalid.
 
+Every element also carries an optional **`data`** bag (`Record<string, unknown>`) — an **extension
+point** the engine passes through untouched and never interprets, for a host to attach app-specific
+metadata without forking the schema (stored opaquely like `markers` ⇒ last-writer-wins on the whole
+bag). At the **scene level**, **`boardType`** classifies the whole board (`process` | `architecture`
+| `ideation`, default `ideation`) — read/write it via `board.getBoardType()`/`setBoardType()`
+(shared in collab through the meta map, like the name/background). Both are **additive** (no
+`DOC_SCHEMA_VERSION` bump); phase 1 is a **label only** (the engine renders identically per type).
+
 ## Collaboration (Yjs)
 
 Each element is a `Y.Map` indexed by `id`. Two **concurrent modifications of different fields**
@@ -346,9 +354,17 @@ function Surface({ doc, awareness, collaborator }) {
   > into a ref and hand a `getSpawnCenter` derived via `viewportCenter(viewport, size)` to the
   > `Toolbar` — otherwise shapes silently fall back to the fixed positions.
 - Primitives also exported individually (`BoardCanvas`, `Toolbar`, `StylePanel`, `SidePanel`,
-  `PresenceAvatars`) + awareness presence helpers (`publishCursor`, `publishSelection`,
-  `publishIdentity`, `observePresence`, `readRemoteCursors`, `readRemoteSelections`, `readParticipants`,
-  `presenceCssColor`, `initials`) to compose a custom layout (what the standalone does).
+  `PresenceAvatars`, **`BoardTypePicker`**, **`ZoomControl`**) + awareness presence helpers
+  (`publishCursor`, `publishSelection`, `publishIdentity`, `observePresence`, `readRemoteCursors`,
+  `readRemoteSelections`, `readParticipants`, `presenceCssColor`, `initials`) to compose a custom
+  layout (what the standalone does).
+  - **`BoardTypePicker`** — self-contained board-type selector (process/architecture/idéation): it
+    tracks the engine (reflects collab/undo via `board.observe`) and writes via `setBoardType`. Drop
+    it anywhere in the host chrome (e.g. a floating bottom bar).
+  - **`ZoomControl`** — presentational − / % / + pill. `BoardCanvas` renders one itself **unless
+    `hideZoomControl`** is set; a host that wants the zoom in its own layout sets `hideZoomControl`
+    and drives an external `ZoomControl` via the actions `BoardCanvas` surfaces through
+    **`onZoomApi({ zoomIn, zoomOut, reset })`** (the live `%` comes from `onViewportChange`).
 
 > **Peer cursors**: rendered as a **colored arrow** (multiplayer style, tip on the exact
 > position) + name label, each in **their own color**. The presence color accepts a **semantic
@@ -358,6 +374,28 @@ function Surface({ doc, awareness, collaborator }) {
 
 Canvas colors are resolved from the **semantic tokens** read on the active theme (light/dark),
 never hard-coded.
+
+## Agent operations (`@binarii/processii/agent-ops`)
+
+A **provider-neutral, headless** catalog of high-level board edits, for a host to expose as tools to
+an LLM agent (mapping each to its own function-calling schema). Imported from the **`/agent-ops`**
+subpath — DOM-free and **React-free** (server-importable). Each op is
+`{ name, description, inputSchema (zod), run(engine, rawInput) }`: `run` validates the input against
+`inputSchema` (throws **`AgentOpError`** on invalid) then applies it to a `WhiteboardEngine`. It
+reuses the exported domain schema (never redeclares element shapes) and knows nothing about any
+specific LLM, host, approval flow or transport.
+
+```ts
+import { AGENT_OPS, getAgentOp } from '@binarii/processii/agent-ops';
+import { createEngine } from '@binarii/processii';
+
+const engine = createEngine();
+getAgentOp('add_step')?.run(engine, { name: 'Validate order', x: 40, y: 20 }); // → { id }
+getAgentOp('connect')?.run(engine, { from, to }); // → { id }
+getAgentOp('read_board')?.run(engine, {}); // → lossless Scene snapshot
+```
+
+First slice: `read_board`, `add_step`, `connect`, `set_board_type`.
 
 ## Theming (contract) & `/ui` subpath
 

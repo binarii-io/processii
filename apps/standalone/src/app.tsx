@@ -19,9 +19,11 @@ import {
 import { Moon, PanelLeft, Sparkles, Sun } from 'lucide-react';
 import {
   BoardCanvas,
+  BoardTypePicker,
   PresenceAvatars,
   SidePanel,
   Toolbar,
+  ZoomControl,
   observePresence,
   publishIdentity,
   readParticipants,
@@ -31,6 +33,7 @@ import {
   type PresenceParticipant,
   type Size,
   type Viewport,
+  type ZoomApi,
 } from '@binarii/processii';
 
 import { DocumentSidebar } from './components/document-sidebar.js';
@@ -78,8 +81,16 @@ export function App({ wiring, participant }: AppProps) {
   // state): read on demand when creating an item, so it must not trigger a re-render (it changes on
   // every pan/zoom frame). Lets new toolbar items spawn at the center of the visible board.
   const viewRef = useRef<{ viewport: Viewport; size: Size } | null>(null);
+  // Zoom % mirrored from the canvas (for the external ZoomControl in the bottom bar) + the zoom
+  // actions the canvas surfaces via onZoomApi.
+  const [zoomPercent, setZoomPercent] = useState(100);
+  const zoomApiRef = useRef<ZoomApi | null>(null);
+  const handleZoomApi = useCallback((api: ZoomApi) => {
+    zoomApiRef.current = api;
+  }, []);
   const handleViewportChange = useCallback((viewport: Viewport, size: Size): void => {
     viewRef.current = { viewport, size };
+    setZoomPercent(Math.round(viewport.zoom * 100));
   }, []);
   const getSpawnCenter = useCallback(
     (): Point | null =>
@@ -489,6 +500,8 @@ export function App({ wiring, participant }: AppProps) {
                     onSelectLane={setSelectedLaneId}
                     onViewportChange={handleViewportChange}
                     onNavigateSubprocess={space.openDocument}
+                    hideZoomControl
+                    onZoomApi={handleZoomApi}
                   />
                 </div>
 
@@ -506,9 +519,15 @@ export function App({ wiring, participant }: AppProps) {
                   </aside>
                 )}
 
-                {/* Floating toolbar (bottom-center). Styling (fill/stroke/width) is NOT here:
-                  it appears above the selected element (see BoardCanvas). */}
-                <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-3">
+                {/* Floating bottom chrome — board-type selector (left) + tools (centre) + zoom
+                  (right), sharing the same BOTTOM edge via flexbox `items-end`; equal `flex-1` sides
+                  keep the toolbar centred. Styling (fill/stroke/width) is NOT here. */}
+                <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex items-end px-3">
+                  <div className="flex flex-1 justify-start">
+                    <div className="pointer-events-auto rounded-md shadow-xl">
+                      <BoardTypePicker engine={space.active.engine} onChange={forceRender} />
+                    </div>
+                  </div>
                   <div className="pointer-events-auto flex max-w-full items-center rounded-2xl border border-border bg-surface p-2 shadow-xl">
                     <Toolbar
                       engine={space.active.engine}
@@ -516,6 +535,15 @@ export function App({ wiring, participant }: AppProps) {
                       selectionCount={space.active.engine.getSelection().length}
                       getSpawnCenter={getSpawnCenter}
                       onCreateSubprocess={createSubprocess}
+                    />
+                  </div>
+                  <div className="flex flex-1 justify-end">
+                    <ZoomControl
+                      className="pointer-events-auto shadow-xl"
+                      percent={zoomPercent}
+                      onZoomIn={() => zoomApiRef.current?.zoomIn()}
+                      onZoomOut={() => zoomApiRef.current?.zoomOut()}
+                      onReset={() => zoomApiRef.current?.reset()}
                     />
                   </div>
                 </div>

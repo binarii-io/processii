@@ -1,6 +1,6 @@
 {
   "name": "@binarii/processii",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "CRDT-backed process whiteboard engine and React editing surface — Yjs board, Canvas 2D renderer, pluggable transport/persistence, Excalidraw/draw.io interop.",
   "license": "Apache-2.0",
   "repository": {
@@ -27,6 +27,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./agent-ops": {
+      "types": "./dist/agent-ops.d.ts",
+      "default": "./dist/agent-ops.js"
     },
     "./ui": {
       "types": "./dist/ui/index.d.ts",

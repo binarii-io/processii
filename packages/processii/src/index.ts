@@ -21,6 +21,7 @@
 export {
   ELEMENT_KINDS,
   STEP_EMOTIONS,
+  BOARD_TYPES,
   SWIMLANE_COLORS,
   CONNECTOR_SIDES,
   DEFAULT_SWIMLANES_WIDTH,
@@ -39,6 +40,7 @@ export {
   WhiteboardSchemaVersionError,
   type ElementKind,
   type StepEmotion,
+  type BoardType,
   type SwimlaneColor,
   type ConnectorSide,
   type WhiteboardElement,
@@ -202,8 +204,10 @@ export {
   type WhiteboardEditorProps,
   type WhiteboardCollaborator,
 } from './editor.js';
-export { BoardCanvas, type BoardCanvasProps } from './board-canvas.js';
+export { BoardCanvas, type BoardCanvasProps, type ZoomApi } from './board-canvas.js';
 export { Toolbar, type ToolbarProps } from './toolbar.js';
+export { BoardTypePicker, type BoardTypePickerProps } from './board-type-picker.js';
+export { ZoomControl, type ZoomControlProps } from './zoom-control.js';
 export { StylePanel, type StylePanelProps } from './style-panel.js';
 export { SidePanel, type SidePanelProps } from './side-panel.js';
 export { PresenceAvatars, type PresenceAvatarsProps } from './presence-avatars.js';

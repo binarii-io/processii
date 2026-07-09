@@ -80,6 +80,7 @@ describe('scene model — validation', () => {
       swimlaneClusters: [],
       swimlanesWidth: 2000,
       agentGroups: [],
+      boardType: 'ideation',
     });
   });
 

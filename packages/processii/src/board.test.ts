@@ -1,7 +1,7 @@
 import { syncDocs } from './crdt/index.js';
 import { describe, expect, it } from 'vitest';
 import { createBoard } from './board.js';
-import { WhiteboardParseError } from './scene.js';
+import { emptyScene, WhiteboardParseError } from './scene.js';
 
 function rect(id: string): unknown {
   return { kind: 'rectangle', id, x: 0, y: 0, width: 10, height: 10 };
@@ -108,5 +108,56 @@ describe('board — shared background color', () => {
     a.setBackground('#dcfce7');
     syncDocs(a.doc, b.doc);
     expect(b.getBackground()).toBe('#dcfce7');
+  });
+});
+
+describe('board — boardType (scene-level classification)', () => {
+  it('defaults to idéation and round-trips through toScene', () => {
+    const board = createBoard({ clientId: 1 });
+    expect(board.getBoardType()).toBe('ideation');
+    expect(board.toScene().boardType).toBe('ideation');
+  });
+
+  it('setBoardType persists and shows in the snapshot', () => {
+    const board = createBoard({ clientId: 1 });
+    board.setBoardType('architecture');
+    expect(board.getBoardType()).toBe('architecture');
+    expect(board.toScene().boardType).toBe('architecture');
+  });
+
+  it('ignores an unknown board type (defensive against untyped callers)', () => {
+    const board = createBoard({ clientId: 1 });
+    board.setBoardType('nope' as never);
+    expect(board.getBoardType()).toBe('ideation');
+  });
+
+  it('loadScene applies the scene board type', () => {
+    const board = createBoard({ clientId: 1 });
+    board.loadScene({ ...emptyScene(), boardType: 'ideation' });
+    expect(board.getBoardType()).toBe('ideation');
+  });
+});
+
+describe('board — element data bag (host extension point)', () => {
+  it('round-trips an opaque data bag through add + read + toScene', () => {
+    const board = createBoard({ clientId: 1 });
+    board.addElement({
+      ...(rect('e') as object),
+      data: { chatMessageId: 'm-42', tags: ['a', 'b'] },
+    });
+    expect(board.getElement('e')).toMatchObject({
+      data: { chatMessageId: 'm-42', tags: ['a', 'b'] },
+    });
+    expect(board.toScene().elements[0]).toMatchObject({ data: { chatMessageId: 'm-42' } });
+  });
+
+  it('updateElement can set then clear the data bag', () => {
+    const board = createBoard({ clientId: 1 });
+    board.addElement(rect('e'));
+    expect(board.getElement('e')?.data).toBeUndefined();
+    board.updateElement('e', { data: { k: 1 } });
+    expect(board.getElement('e')?.data).toEqual({ k: 1 });
+    board.updateElement('e', { data: null }); // clear
+    expect(board.getElement('e')?.data).toBeUndefined();
   });
 });
