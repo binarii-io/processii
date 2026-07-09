@@ -1,3 +1,5 @@
+import { cn } from './ui/index.js';
+
 export interface ZoomControlProps {
   /** Current zoom as a percentage (e.g. 100). */
   readonly percent: number;
@@ -24,9 +26,10 @@ export function ZoomControl({
 }: ZoomControlProps) {
   return (
     <div
-      className={`flex items-center gap-1 rounded-md border border-border bg-surface px-1 py-0.5 text-xs text-text${
-        className ? ` ${className}` : ''
-      }`}
+      className={cn(
+        'flex items-center gap-1 rounded-md border border-border bg-surface px-1 py-0.5 text-xs text-text',
+        className,
+      )}
       role="group"
       aria-label="Contrôles de zoom"
     >

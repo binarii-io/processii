@@ -84,13 +84,19 @@ export function App({ wiring, participant }: AppProps) {
   // Zoom % mirrored from the canvas (for the external ZoomControl in the bottom bar) + the zoom
   // actions the canvas surfaces via onZoomApi.
   const [zoomPercent, setZoomPercent] = useState(100);
+  const zoomPctRef = useRef(100);
   const zoomApiRef = useRef<ZoomApi | null>(null);
   const handleZoomApi = useCallback((api: ZoomApi) => {
     zoomApiRef.current = api;
   }, []);
   const handleViewportChange = useCallback((viewport: Viewport, size: Size): void => {
     viewRef.current = { viewport, size };
-    setZoomPercent(Math.round(viewport.zoom * 100));
+    // Re-render only on an actual zoom-% change (panning keeps it stable) — no state write per frame.
+    const pct = Math.round(viewport.zoom * 100);
+    if (pct !== zoomPctRef.current) {
+      zoomPctRef.current = pct;
+      setZoomPercent(pct);
+    }
   }, []);
   const getSpawnCenter = useCallback(
     (): Point | null =>

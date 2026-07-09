@@ -37,6 +37,15 @@ describe('agent-ops', () => {
     expect(engine.getSelection()).toEqual([]);
   });
 
+  it('add_step accepts an explicit id (deterministic host/test output)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0, id: 'step:custom' }) as {
+      id: string;
+    };
+    expect(id).toBe('step:custom');
+    expect(engine.board.getElement('step:custom')).toMatchObject({ kind: 'step', name: 'A' });
+  });
+
   it('connect binds a directed arrow between two existing steps', () => {
     const engine = createEngine({ clientId: 1 });
     const a = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };

@@ -68,9 +68,18 @@ function defineOp<S extends z.ZodType, Output>(spec: {
   };
 }
 
-/** Fresh opaque id for a created element (`<prefix>:<uuid>`). Ids are host-opaque strings. */
+let idSeq = 0;
+/**
+ * Fresh opaque id for a created element (`<prefix>:<id>`). Uses `crypto.randomUUID` when available
+ * (Node ≥ 19, browsers) with a timestamp+counter fallback for older runtimes. Ids are host-opaque;
+ * a host/test can also pass an explicit `id` to an op for deterministic output.
+ */
 function newId(prefix: string): string {
-  return `${prefix}:${crypto.randomUUID()}`;
+  const rand =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${(idSeq++).toString(36)}`;
+  return `${prefix}:${rand}`;
 }
 
 const readBoard = defineOp({
@@ -99,9 +108,10 @@ const addStep = defineOp({
       .min(1)
       .optional()
       .describe('Attach the step to this swimlane, if given.'),
+    id: z.string().min(1).optional().describe('Explicit element id (else one is generated).'),
   }),
   execute: (engine, input): { id: string } => {
-    const id = newId('step');
+    const id = input.id ?? newId('step');
     engine.addElement(
       {
         kind: 'step',
@@ -130,9 +140,10 @@ const connect = defineOp({
   inputSchema: z.object({
     from: z.string().min(1).describe('Source element id.'),
     to: z.string().min(1).describe('Target element id.'),
+    id: z.string().min(1).optional().describe('Explicit connector id (else one is generated).'),
   }),
   execute: (engine, input): { id: string } => {
-    const id = newId('arrow');
+    const id = input.id ?? newId('arrow');
     const created = engine.connect(id, input.from, input.to, { endArrow: true });
     if (!created) {
       throw new AgentOpError(
@@ -149,7 +160,7 @@ const setBoardType = defineOp({
     'Set the board type: one of process, architecture, ideation (scene-level classification).',
   inputSchema: z.object({ boardType: z.enum(BOARD_TYPES) }),
   execute: (engine, input): { boardType: BoardType } => {
-    engine.board.setBoardType(input.boardType);
+    engine.setBoardType(input.boardType);
     return { boardType: input.boardType };
   },
 });

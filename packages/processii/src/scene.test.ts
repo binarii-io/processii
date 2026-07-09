@@ -95,11 +95,13 @@ describe('scene model — validation', () => {
     expect(parsed.swimlaneClusters).toEqual([]);
   });
 
-  it('applies the process collection defaults on a minimal scene', () => {
+  it('applies the process collection + boardType defaults on a minimal (legacy) scene', () => {
+    // A legacy scene omitting `boardType` must default to `ideation` (backward-compat contract).
     expect(parseScene({ version: 1, elements: [] })).toMatchObject({
       swimlanes: [],
       agentGroups: [],
       swimlanesWidth: 2000,
+      boardType: 'ideation',
     });
   });
 
