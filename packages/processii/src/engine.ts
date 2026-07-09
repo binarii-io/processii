@@ -16,6 +16,7 @@ import type { CrdtDoc } from './crdt/index.js';
 import type { CreateDocOptions } from './crdt/index.js';
 import type {
   AgentGroup,
+  BoardType,
   ConnectorSide,
   Scene,
   Swimlane,
@@ -554,6 +555,14 @@ export class WhiteboardEngine {
   /** Sets the board background color; `null` resets it. Broadcast to peers. */
   setBackground(color: string | null): void {
     this.board.setBackground(color);
+  }
+  /** Board type (scene-level classification) — synchronized in collab. */
+  getBoardType(): BoardType {
+    return this.board.getBoardType();
+  }
+  /** Sets the board type; ignores an unknown value. Broadcast to peers. */
+  setBoardType(type: BoardType): void {
+    this.board.setBoardType(type);
   }
   /** Y.Doc schema version stamped in this document (see `DOC_SCHEMA_VERSION`). */
   getSchemaVersion(): number {

@@ -16,6 +16,7 @@ import { createDoc, type CrdtDoc, type CreateDocOptions } from './crdt/index.js'
 import * as Y from 'yjs';
 import {
   agentGroupSchema,
+  BOARD_TYPES,
   DEFAULT_SWIMLANES_WIDTH,
   elementSchema,
   parseElement,
@@ -23,6 +24,7 @@ import {
   swimlaneSchema,
   WhiteboardSchemaVersionError,
   type AgentGroup,
+  type BoardType,
   type Marker,
   type Scene,
   type StepEmotion,
@@ -44,6 +46,8 @@ const SWIMLANES_WIDTH_KEY = 'swimlanesWidth';
 const DOC_NAME_KEY = 'docName';
 /** Key of the shared board background color (ui-kit token or CSS literal). */
 const BACKGROUND_KEY = 'background';
+/** Key of the shared board type (scene-level classification; see {@link BOARD_TYPES}). */
+const BOARD_TYPE_KEY = 'boardType';
 /** Key of the persisted Y.Doc schema version inside the meta map (see `DOC_SCHEMA_VERSION`). */
 const SCHEMA_VERSION_KEY = 'schemaVersion';
 
@@ -113,6 +117,8 @@ export type ElementPatch = Partial<{
   swimlaneId: string;
   /** Sub-process link (child document id); `null` = unlink (clear the field). */
   subprocessRef: string | null;
+  /** Host extension bag (opaque app metadata, passed through untouched); `null` = clear it. */
+  data: Record<string, unknown> | null;
 }>;
 
 /**
@@ -422,6 +428,20 @@ export class WhiteboardBoard {
     }, this.origin);
   }
 
+  /** Board type (scene-level classification). Defaults to `ideation` when unset (or invalid). */
+  getBoardType(): BoardType {
+    const value = this.meta.get(BOARD_TYPE_KEY);
+    return isBoardType(value) ? value : 'ideation';
+  }
+
+  /** Sets the board type. Ignores an unknown value (defensive: the arg may come untyped from JS). */
+  setBoardType(type: BoardType): void {
+    if (!isBoardType(type)) return;
+    this.doc.transact(() => {
+      this.meta.set(BOARD_TYPE_KEY, type);
+    }, this.origin);
+  }
+
   // --- schema version (document format compatibility) ---
 
   /**
@@ -546,6 +566,7 @@ export class WhiteboardBoard {
       swimlaneClusters: this.listSwimlaneClusters(),
       swimlanesWidth: this.getSwimlanesWidth(),
       agentGroups: this.listAgentGroups(),
+      boardType: this.getBoardType(),
       ...(background ? { background } : {}),
     };
   }
@@ -572,6 +593,9 @@ export class WhiteboardBoard {
       for (const group of scene.agentGroups)
         this.agentGroups.set(group.id, recordToYMap({ ...group }));
       this.meta.set(SWIMLANES_WIDTH_KEY, scene.swimlanesWidth);
+      // A hand-built or v1 scene may omit `boardType` → fall back to the default rather than
+      // writing `undefined` into the meta map (Yjs rejects non-JSON values).
+      this.meta.set(BOARD_TYPE_KEY, isBoardType(scene.boardType) ? scene.boardType : 'ideation');
       if (scene.background) this.meta.set(BACKGROUND_KEY, scene.background);
       else this.meta.delete(BACKGROUND_KEY);
     }, this.origin);
@@ -629,6 +653,11 @@ function recordToYMap(record: ElementRecord): Y.Map<unknown> {
 function numberAt(ymap: Y.Map<unknown>, key: string): number {
   const value = ymap.get(key);
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/** Narrows an unknown meta value to a known {@link BoardType} (used to gate reads and writes). */
+function isBoardType(value: unknown): value is BoardType {
+  return typeof value === 'string' && (BOARD_TYPES as readonly string[]).includes(value);
 }
 
 /** Rebuilds a validated element from its Y.Map (revalidates: the CRDT state is a boundary). */

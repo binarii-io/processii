@@ -35,6 +35,7 @@ function doc(id: string, name: string, elementIds: string[]): BundleDocument {
       swimlaneClusters: [],
       swimlanesWidth: 2000,
       agentGroups: [],
+      boardType: 'ideation',
     },
   };
 }
@@ -176,6 +177,7 @@ describe('bundle — sub-process & hierarchy', () => {
     swimlaneClusters: [],
     swimlanesWidth: 2000,
     agentGroups: [],
+    boardType: 'ideation',
   });
   const emptyScene = () => ({
     version: 1 as const,
@@ -184,6 +186,7 @@ describe('bundle — sub-process & hierarchy', () => {
     swimlaneClusters: [],
     swimlanesWidth: 2000,
     agentGroups: [],
+    boardType: 'ideation',
   });
 
   it('parse keeps parentId and subprocessRef', () => {

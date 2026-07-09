@@ -26,6 +26,16 @@ export const STEP_EMOTIONS = ['happy', 'neutral', 'sad'] as const;
 export type StepEmotion = (typeof STEP_EMOTIONS)[number];
 
 /**
+ * Board **type** — a scene-level classification of the whole board. A host can key behaviour off it
+ * (templates, default tools) or simply display/filter by it. **Phase 1 is a label only**: the engine
+ * renders and behaves identically for every type. Additive, optional with a default (`ideation`) →
+ * **no `DOC_SCHEMA_VERSION` bump** (see `board.ts`). Stored in the board `meta` map, like the name
+ * and background, so it syncs in collab.
+ */
+export const BOARD_TYPES = ['process', 'architecture', 'ideation'] as const;
+export type BoardType = (typeof BOARD_TYPES)[number];
+
+/**
  * Interop irreducibility marker: when an export (drawio/excalidraw) or an import loses
  * information for lack of an equivalent, we **never let it disappear silently** — it is stored
  * in a marker attached to the element (see docs/02 "interop vs native"). The
@@ -70,6 +80,14 @@ const elementCommon = {
   z: z.number().finite().default(0),
   /** Interop markers (preserved irreducibles). Empty for a purely native element. */
   markers: z.array(markerSchema).default([]),
+  /**
+   * **Host extension bag**: opaque application metadata the engine **passes through untouched** and
+   * never interprets — an extension point for consumers (e.g. linking an element to a host record)
+   * without forking the domain schema. JSON-serializable; absent = none. Stored as a single opaque
+   * value → concurrent edits to different keys do **not** merge (last-writer-wins on the whole bag,
+   * like `markers`); use it for host glue, not for engine-understood fields.
+   */
+  data: z.record(z.string(), z.unknown()).optional(),
 };
 
 /**
@@ -309,6 +327,8 @@ export const sceneSchema = z.object({
   agentGroups: z.array(agentGroupSchema).default([]),
   /** Board background color (ui-kit token or CSS literal); absent = theme default. */
   background: z.string().min(1).optional(),
+  /** Board type (scene-level classification). Additive; defaults to `ideation`. See {@link BOARD_TYPES}. */
+  boardType: z.enum(BOARD_TYPES).default('ideation'),
 });
 export type Scene = z.infer<typeof sceneSchema>;
 
@@ -374,5 +394,6 @@ export function emptyScene(): Scene {
     swimlaneClusters: [],
     swimlanesWidth: DEFAULT_SWIMLANES_WIDTH,
     agentGroups: [],
+    boardType: 'ideation',
   };
 }

@@ -103,4 +103,21 @@ describe('board — collaborative convergence (Yjs)', () => {
     expect(left.toScene()).toEqual(right.toScene());
     expect(left.size).toBe(3);
   });
+
+  it('the board type converges (host → guest)', () => {
+    const host = createBoard({ clientId: 1 });
+    const guest = createBoard({ clientId: 2 });
+    host.setBoardType('architecture');
+    expect(guest.getBoardType()).toBe('ideation'); // default before sync
+    syncDocs(host.doc, guest.doc);
+    expect(guest.getBoardType()).toBe('architecture');
+  });
+
+  it('an element data bag converges between replicas', () => {
+    const a = createBoard({ clientId: 1 });
+    const b = createBoard({ clientId: 2 });
+    a.addElement({ ...(rect('e') as object), data: { owner: 'chat' } });
+    syncDocs(a.doc, b.doc);
+    expect(b.getElement('e')).toMatchObject({ data: { owner: 'chat' } });
+  });
 });
