@@ -276,6 +276,9 @@ const moveElement = defineOp({
     if (!engine.moveElement(input.id, input.dx, input.dy)) {
       throw new AgentOpError(`Element "${input.id}" not found.`);
     }
+    // Bound connectors store their routed points; re-route them so an arrow ALWAYS follows the moved
+    // element (the interactive layer does the same after a drag). A link must never lag behind.
+    engine.refreshConnectors();
     return { id: input.id };
   },
 });
@@ -311,6 +314,9 @@ const updateElement = defineOp({
     if (!engine.updateElement(input.id, patch)) {
       throw new AgentOpError(`Element "${input.id}" not found.`);
     }
+    // A geometry change (x/y/width/height) must re-route bound connectors — as after an interactive
+    // move/resize. Cheap and idempotent when the patch only touched text/colors.
+    engine.refreshConnectors();
     return { id: input.id };
   },
 });
