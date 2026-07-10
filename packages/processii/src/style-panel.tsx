@@ -155,7 +155,7 @@ export function StylePanel({ engine, onChange }: StylePanelProps) {
         <div
           role="group"
           aria-label={isFill ? 'Palette de fond' : 'Palette de trait'}
-          className="absolute bottom-full left-0 z-10 mb-2 rounded-xl border border-border bg-surface p-2 shadow-xl"
+          className="absolute bottom-full right-0 z-10 mb-2 rounded-xl border border-border bg-surface p-2 shadow-xl"
         >
           {/* Segmented header */}
           <div className="mb-2 flex gap-0.5 rounded-lg bg-bg p-0.5">
