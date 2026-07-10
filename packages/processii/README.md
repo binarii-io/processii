@@ -5,8 +5,10 @@
 > (`processii-standalone`) — **a single editing code base** for both.
 
 **Document-shaped** module: native data, CRDT, live collab, offline-first, pluggable
-sources. The importable surfaces are `src/index.ts` (engine + editor + CRDT/adapters contract)
-and the **`@binarii/processii/ui`** subpath (vendored UI primitives).
+sources. The importable surfaces are `src/index.ts` (engine + editor + CRDT/adapters contract),
+the **`@binarii/processii/core`** subpath (the same engine **without React** — for a Node/server
+host), the **`@binarii/processii/agent-ops`** subpath (headless LLM agent ops) and the
+**`@binarii/processii/ui`** subpath (vendored UI primitives).
 
 > **Open source.** This package lives in the public repo
 > [`binarii-io/processii`](https://github.com/binarii-io/processii) — its **source of truth** —
@@ -37,6 +39,13 @@ scene      lossless native model (shapes/transforms) + zod validation at the bou
 The **core is DOM-free**: it runs in Node (tests), workers, the P2P standalone and the web app
 with no environment dependency. The network is never required to edit (offline-first by
 construction); it is plugged in via the adapters.
+
+**Import surfaces by React-coupling.** The main entry (`.`) re-exports the DOM-free core **and**
+the React editing surface (editor, canvas, toolbar, hooks…), so it transitively pulls React — great
+in an app, unusable on a server. Two React-free subpaths carve the core out for a Node/server host:
+`@binarii/processii/core` (the whole engine — build a board/engine from a `Y.Doc`, mutate it, read
+it back) and `@binarii/processii/agent-ops` (headless LLM agent ops that `run(engine, …)`). See
+[Core (server-side)](#core-server-side---binariiprocessiicore) below.
 
 ## Scene model
 
@@ -450,6 +459,53 @@ disabled, run() }`. It applies the **same board-type gating** as the styled tool
 > core modules — a host that renders its own toolbar still imports them from the package root. They
 > add **no runtime dependency** (only React, already a peer dep, and `lucide-react`, already used).
 
+## Core (server-side) — `@binarii/processii/core`
+
+The **React-free** core of the package: everything a **Node backend** needs to build a board/engine
+from a Y.Doc and mutate it, with **zero React** on the import path. It re-exports **only** the
+DOM-free modules of the main entry — scene, board, engine, render, viewport, hit-test, handles,
+snap, history, connector, adapters, the CRDT/adapters contract (`createDoc`, `applyUpdate`,
+`syncDocs`, `CrdtDoc`, providers…), presence (awareness helpers), and the excalidraw/draw.io interop
+— and **leaves out** the React editing surface (editor, canvas, toolbar, `PresenceAvatars`, hooks).
+It is a **strict subset** of `.`: same names, same modules, minus React. Importing it from a runtime
+where `react` is not even resolvable works — a guard test walks the whole import closure and asserts
+no reachable module pulls React (`src/core.react-free.test.ts`).
+
+Why: the main entry (`.`) also re-exports React components, so `import { engineFromDoc } from
+'@binarii/processii'` transitively drags React into a server bundle. `/core` closes that gap so a
+host (e.g. a Hocuspocus/Yjs collaboration server) can own a room's `Y.Doc`, build an engine on it,
+and apply the [`/agent-ops`](#agent-operations-binariiprocessiiagent-ops) against it server-side.
+Because the agent writes are applied on the server, they reach connected clients as **remote** Yjs
+updates — outside each client's local `UndoManager` — so they never pollute a user's undo stack, by
+architecture.
+
+```ts
+import * as Y from 'yjs';
+import { engineFromDoc } from '@binarii/processii/core'; // React-FREE — safe in a Node server
+import { getAgentOp } from '@binarii/processii/agent-ops';
+
+const doc = new Y.Doc(); // the room's shared doc (`CrdtDoc` IS `Y.Doc`)
+const engine = engineFromDoc(doc); // build an engine on it — no React
+
+const { id: from } = getAgentOp('add_step')!.run(engine, { name: 'Validate', x: 40, y: 20 });
+const { id: to } = getAgentOp('add_step')!.run(engine, { name: 'Ship', x: 400, y: 20 });
+getAgentOp('connect')!.run(engine, { from, to }); // → { id } (bound arrow)
+const scene = getAgentOp('read_board')!.run(engine, {}); // → lossless Scene snapshot
+
+// The mutations land on `doc` itself — a sync provider broadcasts them to clients.
+doc.getMap('whiteboard:elements').has(from); // → true
+```
+
+**Builders exposed by `/core`** (a host builds an engine one of these ways):
+
+```ts
+createEngine(options?: CreateDocOptions): WhiteboardEngine; // fresh offline board
+engineFromDoc(doc: CrdtDoc): WhiteboardEngine; // engine plugged on an existing Y.Doc
+createBoard(options?: CreateDocOptions): WhiteboardBoard; // fresh board (no engine)
+boardFromDoc(doc: CrdtDoc): WhiteboardBoard; // board view on an existing Y.Doc
+// `engineFromDoc(doc)` === `new WhiteboardEngine(boardFromDoc(doc))`; `CrdtDoc` is `Y.Doc`.
+```
+
 ## Agent operations (`@binarii/processii/agent-ops`)
 
 A **provider-neutral, headless** catalog of high-level board edits, for a host to expose as tools to
@@ -462,7 +518,7 @@ specific LLM, host, approval flow or transport.
 
 ```ts
 import { AGENT_OPS, getAgentOp } from '@binarii/processii/agent-ops';
-import { createEngine } from '@binarii/processii';
+import { createEngine } from '@binarii/processii/core'; // React-free — server-importable
 
 const engine = createEngine();
 getAgentOp('add_step')?.run(engine, { name: 'Validate order', x: 40, y: 20 }); // → { id }
@@ -579,4 +635,6 @@ marquee), **viewport** (world↔screen inverses, pan, anchored zoom + bound satu
 **hit-testing** (rotation-aware click on solid shapes/lines, topmost by z, marquee),
 **vendored modules** (`src/crdt/crdt.test.ts`: convergence/offline→resync/awareness/provider
 contracts; `src/ui/ui.test.tsx` + `src/ui/theme-css.test.ts`: primitives a11y + tokens ↔
-embedded CSS sync).
+embedded CSS sync), and the **`/core` subpath** (`src/core.test.ts`: headless server flow — build
+an engine from a raw `Y.Doc` + apply `/agent-ops`, writes land on the doc; `src/core.react-free.test.ts`:
+the whole `core.ts` import closure is React-free, so it is Node-importable without React).
