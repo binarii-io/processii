@@ -116,6 +116,22 @@ describe('agent-ops', () => {
     expect(engine.getSelection()).toEqual([]);
   });
 
+  it('add_element rejects a text element without text with a typed AgentOpError', () => {
+    const engine = createEngine({ clientId: 1 });
+    // A text element requires a label: it must fail as an AgentOpError (this op's contract), not leak
+    // the engine's WhiteboardParseError. Rectangles/ellipses keep text optional (covered above).
+    expect(() => op('add_element').run(engine, { kind: 'text', x: 0, y: 0 })).toThrow(AgentOpError);
+    expect(() => op('add_element').run(engine, { kind: 'text', x: 0, y: 0, text: '' })).toThrow(
+      AgentOpError,
+    );
+    expect((op('read_board').run(engine, {}) as Scene).elements).toHaveLength(0);
+    // With a label it succeeds.
+    const { id } = op('add_element').run(engine, { kind: 'text', x: 0, y: 0, text: 'Hi' }) as {
+      id: string;
+    };
+    expect(id).toMatch(/^el:/);
+  });
+
   it('add_element applies sensible size defaults and omits text when unset', () => {
     const engine = createEngine({ clientId: 1 });
     const { id } = op('add_element').run(engine, { kind: 'ellipse', x: 0, y: 0 }) as { id: string };

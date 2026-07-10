@@ -189,6 +189,12 @@ const addElement = defineOp({
     id: z.string().min(1).optional().describe('Explicit element id (else one is generated).'),
   }),
   execute: (engine, input): { id: string } => {
+    // A text element has no shape fallback: the engine's `textSchema` requires `text`. Guard here so a
+    // missing label fails as an `AgentOpError` (this op's contract) instead of leaking the engine's
+    // `WhiteboardParseError`. Rectangles and ellipses keep `text` optional.
+    if (input.kind === 'text' && (input.text === undefined || input.text === '')) {
+      throw new AgentOpError('A text element requires a non-empty `text`.');
+    }
     const id = input.id ?? newId('el');
     engine.addElement(
       {
