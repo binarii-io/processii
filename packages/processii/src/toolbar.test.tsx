@@ -111,6 +111,28 @@ describe('Toolbar — process board', () => {
     expect(engine.listSwimlanes()).toHaveLength(1);
   });
 
+  it('hides the process-modelling tools on a non-process board (default idéation)', () => {
+    const engine = createEngine({ clientId: 1 }); // default boardType = ideation
+    const { queryByRole } = render(
+      <Toolbar engine={engine} onCreateSubprocess={() => Promise.resolve('c')} />,
+    );
+    // Step / sub-process / swimlane / group belong to the process board only → absent here.
+    for (const name of ['Étape', 'Sous-process', 'Swimlane', 'Groupe']) {
+      expect(queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+    // The generic drawing tools stay on every board type.
+    expect(queryByRole('button', { name: 'Rectangle' })).toBeInTheDocument();
+  });
+
+  it('reveals the process-modelling tools once the board type is process', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { queryByRole, rerender } = render(<Toolbar engine={engine} />);
+    expect(queryByRole('button', { name: 'Swimlane' })).not.toBeInTheDocument();
+    act(() => engine.setBoardType('process'));
+    rerender(<Toolbar engine={engine} />); // host re-renders on the shared onChange
+    expect(queryByRole('button', { name: 'Swimlane' })).toBeInTheDocument();
+  });
+
   it('groups the selected steps (enabled when the selection is non-empty)', () => {
     const engine = createEngine({ clientId: 1 });
     engine.setBoardType('process');

@@ -21,9 +21,9 @@ export interface BoardTypePickerProps {
  * **Board-type** selector: sets the scene-level classification, shared in collab via
  * `engine.setBoardType`. **Self-contained** — it tracks the engine and reflects external changes
  * (peers, undo/redo) through `board.observe`, so it can be dropped into any host chrome (e.g. next
- * to the document title) without wiring a refresh. **Phase 1 is a label only**: choosing a type
- * records what kind of board this is (process / architecture / idéation) without changing the
- * available tools or the rendering.
+ * to the document title) without wiring a refresh. The type **gates the process-modelling toolbar
+ * tools** (step / sub-process / swimlane / group are shown on the `process` board only); the
+ * rendering is otherwise identical per type.
  */
 export function BoardTypePicker({ engine, onChange }: BoardTypePickerProps) {
   const [current, setCurrent] = useState<BoardType>(() => engine.getBoardType());

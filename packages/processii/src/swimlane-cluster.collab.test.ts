@@ -94,6 +94,29 @@ describe('swimlane clusters — convergence', () => {
     expect(a.listSwimlanes().filter((l) => l.clusterId === 'A')).toHaveLength(3);
   });
 
+  it('concurrent addSwimlaneInView on two peers converges (injective per-lane clusters)', () => {
+    const [a, b] = seeded(() => {}); // empty boards, already synced
+    // Each peer creates a lane while looking at a different, empty area → a fresh cluster each.
+    a.addSwimlaneInView({ id: 'la', height: 120 }, { x: 0, y: 0, width: 800, height: 600 });
+    b.addSwimlaneInView({ id: 'lb', height: 120 }, { x: 5000, y: 5000, width: 800, height: 600 });
+    syncDocs(a.board.doc, b.board.doc);
+
+    expect(a.toScene()).toEqual(b.toScene());
+    // Both lanes survive in their own injective cluster — no collision, no orphan.
+    expect(
+      a
+        .listSwimlanes()
+        .map((l) => l.id)
+        .sort(),
+    ).toEqual(['la', 'lb']);
+    expect(
+      a
+        .listSwimlaneClusters()
+        .map((c) => c.id)
+        .sort(),
+    ).toEqual(['cluster-of:la', 'cluster-of:lb']);
+  });
+
   it('a legacy doc (lanes without clusterId) projects the same cluster on both peers', () => {
     const a = createEngine({ clientId: 1 });
     a.addSwimlane({ id: 'l1', order: 0, height: 100 });

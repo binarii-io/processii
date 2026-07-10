@@ -342,6 +342,20 @@ describe('swimlane clusters — context-aware creation (addSwimlaneInView)', () 
     expect(engine.listSwimlaneClusters()).toHaveLength(2); // two independent blocks
   });
 
+  it('ties on visible area break by the leftmost cluster (deterministic)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addSwimlane({ id: 'a1', clusterId: 'A', order: 0, height: 100 });
+    engine.addSwimlaneCluster({ id: 'A', x: 0, y: 0, width: 2000 }); // spans x:[0,2000]
+    engine.addSwimlane({ id: 'b1', clusterId: 'B', order: 0, height: 100 });
+    engine.addSwimlaneCluster({ id: 'B', x: 3000, y: 0, width: 2000 }); // spans x:[3000,5000]
+    // View x:[1500,3500] overlaps A by 500 (1500..2000) and B by 500 (3000..3500) → tie → leftmost A.
+    const { lane } = engine.addSwimlaneInView(
+      { id: 'c1', height: 100 },
+      { x: 1500, y: 0, width: 2000, height: 100 },
+    );
+    expect(lane.clusterId).toBe('A');
+  });
+
   it('picks the MOST visible cluster when several overlap the view', () => {
     const engine = createEngine({ clientId: 1 });
     engine.addSwimlane({ id: 'a1', clusterId: 'A', order: 0, height: 100 });
@@ -366,10 +380,15 @@ describe('swimlane clusters — context-aware creation (addSwimlaneInView)', () 
     expect(lane.order).toBe(1);
   });
 
-  it('writes the new cluster override and the lane atomically (single undo step)', () => {
+  it('writes the new cluster override and the lane atomically (one update, single undo step)', () => {
     const engine = createEngine({ clientId: 1 });
     const history = engine.history();
+    let updates = 0;
+    engine.board.doc.on('update', () => (updates += 1));
     engine.addSwimlaneInView({ id: 'l1', height: 180 }, { x: 0, y: 0, width: 800, height: 600 });
+    // Cluster override + lane emit ONE CRDT update (nested transactions flatten) → peers never see
+    // a lane pointing at a cluster whose override has not landed.
+    expect(updates).toBe(1);
     expect(engine.listSwimlanes()).toHaveLength(1);
     expect(engine.listSwimlaneClusters()).toHaveLength(1);
     // One undo removes BOTH the lane and its cluster override (they are one transaction).

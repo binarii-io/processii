@@ -17,6 +17,11 @@ test('create lanes, then detach / move a swimlane block without crashing', async
   const canvas = page.getByLabel('Surface de dessin du whiteboard');
   await expect(canvas).toBeVisible();
 
+  // Swimlanes (and the other process-modelling tools) are exposed only on the **process** board
+  // type; a fresh board defaults to idéation. Switch it via the board-type picker first.
+  await page.getByRole('button', { name: /^Type de board/ }).click();
+  await page.getByRole('button', { name: 'Process', exact: true }).click();
+
   const toolbar = page.getByRole('toolbar', { name: 'Outils de dessin' });
   await toolbar.getByRole('button', { name: 'Swimlane' }).click();
   await toolbar.getByRole('button', { name: 'Swimlane' }).click();

@@ -68,7 +68,11 @@ metadata without forking the schema (stored opaquely like `markers` ⇒ last-wri
 bag). At the **scene level**, **`boardType`** classifies the whole board (`process` | `architecture`
 | `ideation`, default `ideation`) — read/write it via `board.getBoardType()`/`setBoardType()`
 (shared in collab through the meta map, like the name/background). Both are **additive** (no
-`DOC_SCHEMA_VERSION` bump); phase 1 is a **label only** (the engine renders identically per type).
+`DOC_SCHEMA_VERSION` bump). `boardType` **gates the process-modelling toolbar tools** (step /
+sub-process / swimlane / group are exposed on the `process` board only; the generic drawing tools
+stay on every type); the renderer is otherwise identical per type. New boards default to `ideation`,
+so a host that wants the process tools up front should set `process` (via `BoardTypePicker` or
+`setBoardType`).
 
 ## Collaboration (Yjs)
 
@@ -382,7 +386,8 @@ null` (the visible world rect, from `visibleWorldRect`) and `onCenterView(world)
   layout (what the standalone does).
   - **`BoardTypePicker`** — self-contained board-type selector (process/architecture/idéation): it
     tracks the engine (reflects collab/undo via `board.observe`) and writes via `setBoardType`. Drop
-    it anywhere in the host chrome (e.g. a floating bottom bar).
+    it anywhere in the host chrome (e.g. a floating bottom bar). The chosen type **gates the
+    process-modelling toolbar tools** (see [Scene model](#scene-model)).
   - **`ZoomControl`** — presentational − / % / + pill. `BoardCanvas` renders one itself **unless
     `hideZoomControl`** is set; a host that wants the zoom in its own layout sets `hideZoomControl`
     and drives an external `ZoomControl` via the actions `BoardCanvas` surfaces through
