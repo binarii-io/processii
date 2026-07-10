@@ -83,6 +83,43 @@ describe('SidePanel — swimlane editing', () => {
   });
 });
 
+describe('SidePanel — group editing', () => {
+  it('renames the group and dissolves it', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addAgentGroup({ id: 'g1', name: 'Agent A', stepIds: ['s1'] });
+    let groupSel: string | null = 'g1';
+    const onSelectGroup = (id: string | null): void => {
+      groupSel = id;
+    };
+    const { getByLabelText, getByRole } = render(
+      <SidePanel
+        engine={engine}
+        selectedLaneId={null}
+        selectedGroupId="g1"
+        onSelectGroup={onSelectGroup}
+      />,
+    );
+
+    fireEvent.change(getByLabelText('Nom du groupe'), { target: { value: 'Reviewers' } });
+    expect(engine.listAgentGroups()[0]).toMatchObject({ name: 'Reviewers' });
+
+    fireEvent.click(getByRole('button', { name: 'Dissocier le groupe' }));
+    expect(engine.listAgentGroups()).toEqual([]);
+    expect(groupSel).toBeNull();
+  });
+
+  it('takes precedence over a lane selection', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addSwimlane({ id: 'l1', name: 'Lane', order: 0, color: 'neutral', height: 160 });
+    engine.addAgentGroup({ id: 'g1', name: 'Group', stepIds: ['s1'] });
+    const { getByText } = render(
+      <SidePanel engine={engine} selectedLaneId="l1" selectedGroupId="g1" />,
+    );
+    // The group heading wins when both a lane and a group are selected.
+    expect(getByText('Groupe')).toBeInTheDocument();
+  });
+});
+
 describe('SidePanel — without a selection', () => {
   it('shows a hint', () => {
     const engine = createEngine({ clientId: 1 });

@@ -230,7 +230,16 @@ updateSwimlaneCluster/removeSwimlaneCluster`). The legacy shared `swimlanesWidth
   `grab`/`grabbing` cursor; a plain click only selects.
 
 - **agentGroups** (`AgentGroup`) — **generic named** groupings of steps (`stepIds[]`). CRUD:
-  `engine.addAgentGroup/updateAgentGroup/removeAgentGroup/listAgentGroups`.
+  `engine.addAgentGroup/updateAgentGroup/removeAgentGroup/listAgentGroups`. A group is drawn as a
+  frame enclosing its member steps with a **title band** at the top hosting its `name` (or `Groupe`
+  when empty). `engine.agentGroupBounds()` exposes each group's computed box (member union + 16px
+  side/bottom padding and a taller `GROUP_HEADER_HEIGHT` top band for the title), and
+  `engine.groupHeaderAtPoint(p)` returns the group whose title band is under a world point — used by
+  the React surface to **select a group by clicking its header** (`pointer` cursor; member steps
+  hit-test first, so only the title band selects the group). The selected
+  group is then **renamed** (`updateAgentGroup(id, { name })`) or **dissolved** (`removeAgentGroup`)
+  from the side panel, exactly like a swimlane. Selection is a local UI concern (`selectedGroupId`
+  on `BoardCanvas`/`SidePanel`), mutually exclusive with the step/lane selection.
 
 The board also carries a **shared document name** (`engine.get/setName`, stored in the Y.Doc
 meta map): synced in collab like everything else, it lets e.g. a guest **adopt the host's
@@ -362,11 +371,12 @@ function Surface({ doc, awareness, collaborator }) {
 
 - **`WhiteboardEditor`** — full-frame surface: `BoardCanvas` (drawing, selection, zoom/pan,
   in-place editing, **in-canvas presence** via `awareness`) + floating `Toolbar` (shape/step
-  creation, **background color block**, undo/redo) + contextual `SidePanel` (step/lane
-  properties — including the **"Description on the card" toggle** and the **clearable emotion**
-  via the "∅ Aucune" option) + contextual style bar. Takes a **shared `engine`**
-  (toolbar/canvas/panel act on the same instance); `editable={false}` hides the editing
-  controls. The **avatar chips** remain the host app's responsibility (per-app chrome).
+  creation, **background color block**, undo/redo) + contextual `SidePanel` (step/lane/**group**
+  properties — including the **"Description on the card" toggle**, the **clearable emotion**
+  via the "∅ Aucune" option, and **group rename / dissolve** via a group's header selection)
+  - contextual style bar. Takes a **shared `engine`**
+    (toolbar/canvas/panel act on the same instance); `editable={false}` hides the editing
+    controls. The **avatar chips** remain the host app's responsibility (per-app chrome).
 - **`useWhiteboardEngine(doc)`** — hook memoizing `engineFromDoc(doc)` (null while `doc` is absent).
 - **New items spawn at the viewport center.** `WhiteboardEditor` mirrors the canvas viewport +
   size (`BoardCanvas`'s `onViewportChange`, local presentation state — never persisted) and passes

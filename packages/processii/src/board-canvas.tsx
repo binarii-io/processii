@@ -63,6 +63,9 @@ export interface BoardCanvasProps {
   readonly awareness?: CrdtAwareness;
   readonly selectedLaneId?: string | null;
   readonly onSelectLane?: (id: string | null) => void;
+  /** Selected group (highlighted); selected by clicking its header. Editing is done in the side panel. */
+  readonly selectedGroupId?: string | null;
+  readonly onSelectGroup?: (id: string | null) => void;
   /** Sub-process: double-click on a linked step → "enter" the `ref` child whiteboard. */
   readonly onNavigateSubprocess?: (ref: string) => void;
   /** Initial zoom (and "reset view" zoom). Defaults to `1`. Used e.g. to zoom out an embedded
@@ -321,6 +324,8 @@ export function BoardCanvas({
   awareness,
   selectedLaneId,
   onSelectLane,
+  selectedGroupId,
+  onSelectGroup,
   onNavigateSubprocess,
   initialZoom = 1,
   onViewportChange,
@@ -489,6 +494,7 @@ export function BoardCanvas({
       ...(marqueeHits.current.length ? { marqueeHighlightIds: marqueeHits.current } : {}),
       ...(guides.current ? { guides: guides.current } : {}),
       ...(selectedLaneId ? { selectedLaneId } : {}),
+      ...(selectedGroupId ? { selectedGroupId } : {}),
       ...(remoteSelectionsRef.current.length
         ? {
             remoteSelections: remoteSelectionsRef.current.map((s) => ({
@@ -577,7 +583,7 @@ export function BoardCanvas({
         publishSelection(awareness, sel);
       }
     }
-  }, [engine, size.w, size.h, selectedLaneId, editing, awareness, dpr]);
+  }, [engine, size.w, size.h, selectedLaneId, selectedGroupId, editing, awareness, dpr]);
 
   useEffect(() => {
     draw();
@@ -689,6 +695,8 @@ export function BoardCanvas({
     if (gripClusterAtPoint(world, zoom)) return 'grab';
     if (engine.laneHeaderAtPoint(world)) return 'grab';
     if (hitTest(engine.listElements(), world, DEFAULT_HIT_TOLERANCE / zoom)) return 'move';
+    // Group header → click to select/rename (no drag: a group is a computed box, not movable).
+    if (engine.groupHeaderAtPoint(world)) return 'pointer';
     return 'default';
   };
 
@@ -806,6 +814,7 @@ export function BoardCanvas({
       const cb = engine.clusterBounds().find((c) => c.cluster.id === gripId);
       if (cb) {
         onSelectLane?.(null);
+        onSelectGroup?.(null);
         engine.clearSelection();
         interaction.current = {
           mode: 'clusterMove',
@@ -832,6 +841,7 @@ export function BoardCanvas({
     const hit = hitTest(engine.listElements(), world, tolerance);
     if (hit) {
       onSelectLane?.(null);
+      onSelectGroup?.(null);
       if (event.shiftKey) {
         engine.toggleSelection(hit.id);
         interaction.current = { mode: 'idle' };
@@ -850,11 +860,14 @@ export function BoardCanvas({
       }
     } else {
       const laneId = engine.laneHeaderAtPoint(world);
+      // A group header only wins when no lane header is under the point (lanes take precedence).
+      const groupId = laneId ? undefined : engine.groupHeaderAtPoint(world);
       if (laneId) {
         const lane = engine.listSwimlanes().find((l) => l.id === laneId);
         const band = engine.laneBand(laneId);
         engine.clearSelection();
         onSelectLane?.(laneId);
+        onSelectGroup?.(null);
         // Selects the lane AND arms the **header drag**: a plain click (no movement) only selects;
         // dragging previews reorder / attach / detach and commits on release. `grabD*` = cursor↔
         // band-top-left offset, so the ghost follows naturally.
@@ -865,8 +878,16 @@ export function BoardCanvas({
           grabDx: world.x - (band?.x ?? 0),
           grabDy: world.y - (band?.y ?? 0),
         };
+      } else if (groupId) {
+        // Group header click: select the group (edited in the side panel). No drag gesture — a
+        // group is a computed box over its steps, not a movable entity.
+        engine.clearSelection();
+        onSelectLane?.(null);
+        onSelectGroup?.(groupId);
+        interaction.current = { mode: 'idle' };
       } else {
         onSelectLane?.(null);
+        onSelectGroup?.(null);
         if (!event.shiftKey) engine.clearSelection();
         interaction.current = { mode: 'marquee', startWorld: world, additive: event.shiftKey };
       }

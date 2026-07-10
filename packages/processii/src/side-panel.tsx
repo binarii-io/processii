@@ -6,10 +6,10 @@ import type { WhiteboardEngine } from './engine.js';
 
 /**
  * **Process board** editing side panel: edits the properties of the selected entity —
- * a **step** (single selection of a `step` element) or a **swimlane** (selected via its
- * header). Writes through the engine's validated operations (`updateElement` / `updateSwimlane`),
- * so collab + offline + undo apply. Direct read of the engine state on every render (the parent
- * forces the render via `onChange`).
+ * a **step** (single selection of a `step` element), a **swimlane** (selected via its header) or
+ * a **group** (selected via its header). Writes through the engine's validated operations
+ * (`updateElement` / `updateSwimlane` / `updateAgentGroup`), so collab + offline + undo apply.
+ * Direct read of the engine state on every render (the parent forces the render via `onChange`).
  */
 export interface SidePanelProps {
   readonly engine: WhiteboardEngine;
@@ -17,6 +17,10 @@ export interface SidePanelProps {
   readonly onChange?: () => void;
   /** Deselects the lane after removal. */
   readonly onSelectLane?: (id: string | null) => void;
+  /** Selected group id (edited here — name — via its header selection). */
+  readonly selectedGroupId?: string | null;
+  /** Deselects the group after it is dissolved. */
+  readonly onSelectGroup?: (id: string | null) => void;
   /** Sub-process: creates a child whiteboard (via the app) and returns its id, to link the step. */
   readonly onCreateSubprocess?: () => Promise<string | null>;
   /** Sub-process: "enter" the `ref` child whiteboard. */
@@ -101,20 +105,61 @@ export function SidePanel({
   selectedLaneId,
   onChange,
   onSelectLane,
+  selectedGroupId,
+  onSelectGroup,
   onCreateSubprocess,
   onNavigateSubprocess,
 }: SidePanelProps) {
-  const lane = selectedLaneId
-    ? (engine.listSwimlanes().find((l) => l.id === selectedLaneId) ?? null)
+  const group = selectedGroupId
+    ? (engine.listAgentGroups().find((g) => g.id === selectedGroupId) ?? null)
     : null;
+  const lane =
+    !group && selectedLaneId
+      ? (engine.listSwimlanes().find((l) => l.id === selectedLaneId) ?? null)
+      : null;
   const selection = engine.getSelection();
-  const step = !lane && selection.length === 1 ? engine.board.getElement(selection[0]!) : undefined;
+  const step =
+    !group && !lane && selection.length === 1 ? engine.board.getElement(selection[0]!) : undefined;
 
   // **Layout-only** container: the card (border, background, shadow, padding) is provided by
   // the host (`editor.tsx`). No chrome here → avoids double border / double padding.
   const wrap = (children: React.ReactNode): React.JSX.Element => (
     <div className="flex flex-col gap-3">{children}</div>
   );
+
+  if (group) {
+    return wrap(
+      <>
+        <h2 className="border-b border-border pb-2 text-sm font-semibold text-text">Groupe</h2>
+        {field(
+          'Nom',
+          <input
+            className={inputCls}
+            value={group.name}
+            placeholder="Groupe"
+            aria-label="Nom du groupe"
+            autoFocus
+            onChange={(e) => {
+              engine.updateAgentGroup(group.id, { name: e.target.value });
+              onChange?.();
+            }}
+          />,
+        )}
+        <Button
+          size="sm"
+          variant="danger"
+          className="mt-1 w-full"
+          onClick={() => {
+            engine.removeAgentGroup(group.id);
+            onSelectGroup?.(null);
+            onChange?.();
+          }}
+        >
+          Dissocier le groupe
+        </Button>
+      </>,
+    );
+  }
 
   if (lane) {
     return wrap(
@@ -369,7 +414,8 @@ export function SidePanel({
 
   return wrap(
     <p className="text-xs text-muted">
-      Sélectionne une étape (clic) ou une bande (clic sur son en-tête) pour éditer ses propriétés.
+      Sélectionne une étape (clic), une bande ou un groupe (clic sur son en-tête) pour éditer ses
+      propriétés.
     </p>,
   );
 }
