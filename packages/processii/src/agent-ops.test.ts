@@ -214,6 +214,31 @@ describe('agent-ops', () => {
     );
   });
 
+  it('move_element re-routes bound connectors: an arrow follows the moved element', () => {
+    const engine = createEngine({ clientId: 1 });
+    const a = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    const b = op('add_step').run(engine, { name: 'B', x: 500, y: 0 }) as { id: string };
+    const c = op('connect').run(engine, { from: a.id, to: b.id }) as { id: string };
+    const arrowBefore = engine.board.getElement(c.id) as { points: [number, number][] };
+    const before = JSON.stringify(arrowBefore.points);
+    // Move A far down: without a connector re-route the arrow would stay put (the reported bug).
+    op('move_element').run(engine, { id: a.id, dx: 0, dy: 400 });
+    const arrowAfter = engine.board.getElement(c.id) as { points: [number, number][] };
+    expect(JSON.stringify(arrowAfter.points)).not.toBe(before);
+  });
+
+  it('update_element re-routes bound connectors on an absolute position change', () => {
+    const engine = createEngine({ clientId: 1 });
+    const a = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    const b = op('add_step').run(engine, { name: 'B', x: 500, y: 0 }) as { id: string };
+    const c = op('connect').run(engine, { from: a.id, to: b.id }) as { id: string };
+    const before = JSON.stringify((engine.board.getElement(c.id) as { points: unknown }).points);
+    op('update_element').run(engine, { id: b.id, x: 500, y: 400 });
+    expect(JSON.stringify((engine.board.getElement(c.id) as { points: unknown }).points)).not.toBe(
+      before,
+    );
+  });
+
   it('update_element patches only the provided fields (text/position/size/colors)', () => {
     const engine = createEngine({ clientId: 1 });
     const { id } = op('add_element').run(engine, {
