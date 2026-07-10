@@ -20,6 +20,7 @@ import type {
   RenderModel,
   RenderSwimlane,
 } from './engine.js';
+import { GROUP_HEADER_HEIGHT } from './engine.js';
 import { IDENTITY_VIEWPORT, type Viewport } from './viewport.js';
 import { elementHandles, hasHandles, HANDLE_SCREEN_SIZE } from './handles.js';
 
@@ -767,6 +768,9 @@ function drawArrowhead(
 /** Corner radius of a step card (world units). */
 const STEP_RADIUS = 10;
 
+/** Corner radius of a group frame (world units) — slightly softer than a step card. */
+const GROUP_RADIUS = 12;
+
 /** Builds a **rounded-corner** rectangle path (DOM-free, via quadraticCurveTo). */
 function roundedRectPath(
   ctx: CanvasLike,
@@ -903,16 +907,16 @@ function drawAgentGroup(
   ctx.lineWidth = (selected ? 2 : 1) / zoom;
   ctx.globalAlpha = 0.06;
   ctx.fillStyle = paint('accent');
-  ctx.beginPath();
-  ctx.rect(bounds.x, bounds.y, bounds.width, bounds.height);
+  roundedRectPath(ctx, bounds.x, bounds.y, bounds.width, bounds.height, GROUP_RADIUS);
   ctx.fill();
   ctx.globalAlpha = 1;
-  ctx.beginPath();
-  ctx.rect(bounds.x, bounds.y, bounds.width, bounds.height);
+  roundedRectPath(ctx, bounds.x, bounds.y, bounds.width, bounds.height, GROUP_RADIUS);
   ctx.stroke();
   ctx.fillStyle = paint('accent');
-  ctx.font = '600 11px sans-serif';
-  ctx.fillText(group.name || 'Groupe', bounds.x + 6, bounds.y + 14);
+  ctx.font = '600 12px sans-serif';
+  // Title (alphabetic baseline — the renderer positions text manually) roughly vertically centered
+  // in the top band (see GROUP_HEADER_HEIGHT), with a comfortable left inset.
+  ctx.fillText(group.name || 'Groupe', bounds.x + 10, bounds.y + GROUP_HEADER_HEIGHT / 2 + 4);
   ctx.restore();
 }
 

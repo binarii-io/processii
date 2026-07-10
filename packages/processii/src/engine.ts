@@ -75,6 +75,14 @@ function intersectionArea(a: BoundingBox, b: BoundingBox): number {
   return w > 0 && h > 0 ? w * h : 0;
 }
 
+/**
+ * Height (world units) of a group's **title band** — the top margin above the member steps that
+ * hosts the group name. Larger than the side/bottom padding so the title has breathing room; used
+ * both for the box geometry (`agentGroupBounds`), the clickable header (`groupHeaderAtPoint`) and
+ * the label placement (`render.ts`), so all three stay in sync.
+ */
+export const GROUP_HEADER_HEIGHT = 32;
+
 export class WhiteboardEngine {
   readonly board: WhiteboardBoard;
   private selection = new Set<string>();
@@ -800,6 +808,64 @@ export class WhiteboardEngine {
     return undefined;
   }
 
+  /**
+   * Groups with their computed bounding box (encloses the member steps + margin). Shared by the
+   * render model and the header hit-test so both agree on group geometry. Groups whose members
+   * have all vanished project no box (skipped).
+   */
+  agentGroupBounds(): RenderAgentGroup[] {
+    const boundsById = new Map(this.listElements().map((e) => [e.id, elementBounds(e)]));
+    return this.computeAgentGroups(boundsById);
+  }
+
+  /** Group boxes from a pre-computed element-bounds map (reused by {@link toRenderModel}). */
+  private computeAgentGroups(boundsById: Map<string, BoundingBox>): RenderAgentGroup[] {
+    // Asymmetric margin: a taller **top band** hosts the title (rendered there, clickable via
+    // `groupHeaderAtPoint`); the other sides keep the plain padding.
+    const GROUP_PADDING = 16;
+    const GROUP_HEADER_PADDING = GROUP_HEADER_HEIGHT;
+    return this.listAgentGroups()
+      .map((group) => {
+        const boxes = group.stepIds
+          .map((id) => boundsById.get(id))
+          .filter((b): b is BoundingBox => b !== undefined);
+        const union = unionBounds(boxes);
+        if (!union) return undefined;
+        return {
+          group,
+          bounds: {
+            x: union.x - GROUP_PADDING,
+            y: union.y - GROUP_HEADER_PADDING,
+            width: union.width + GROUP_PADDING * 2,
+            height: union.height + GROUP_HEADER_PADDING + GROUP_PADDING,
+          },
+        };
+      })
+      .filter((g): g is RenderAgentGroup => g !== undefined);
+  }
+
+  /**
+   * Id of the group whose **title band** (the top strip spanning the full box width, above every
+   * member step) is under the world point — used to select/rename a group without capturing its
+   * member steps (which hit-test first) or its whole background. Full-width so a long, untruncated
+   * name stays clickable to its end.
+   */
+  groupHeaderAtPoint(
+    p: { x: number; y: number },
+    headerHeight = GROUP_HEADER_HEIGHT,
+  ): string | undefined {
+    for (const { group, bounds } of this.agentGroupBounds()) {
+      if (
+        p.x >= bounds.x &&
+        p.x <= bounds.x + bounds.width &&
+        p.y >= bounds.y &&
+        p.y < bounds.y + headerHeight
+      )
+        return group.id;
+    }
+    return undefined;
+  }
+
   addAgentGroup(input: unknown): AgentGroup {
     return this.board.addAgentGroup(input);
   }
@@ -862,26 +928,8 @@ export class WhiteboardEngine {
       return { lane, x: b?.x ?? 0, y: b?.y ?? 0, width: b?.width ?? this.getSwimlanesWidth() };
     });
 
-    // Groups: bounding box enclosing the member steps + margin.
-    const GROUP_PADDING = 16;
-    const agentGroups = this.listAgentGroups()
-      .map((group) => {
-        const boxes = group.stepIds
-          .map((id) => boundsById.get(id))
-          .filter((b): b is BoundingBox => b !== undefined);
-        const union = unionBounds(boxes);
-        if (!union) return undefined;
-        return {
-          group,
-          bounds: {
-            x: union.x - GROUP_PADDING,
-            y: union.y - GROUP_PADDING,
-            width: union.width + GROUP_PADDING * 2,
-            height: union.height + GROUP_PADDING * 2,
-          },
-        };
-      })
-      .filter((g): g is RenderAgentGroup => g !== undefined);
+    // Groups: bounding box enclosing the member steps + margin (shared with header hit-testing).
+    const agentGroups = this.computeAgentGroups(boundsById);
 
     return {
       elements: elements.map((element) => ({

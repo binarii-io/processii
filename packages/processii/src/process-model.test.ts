@@ -208,6 +208,64 @@ describe('board — agentGroups', () => {
     expect(engine.removeAgentGroup('g1')).toBe(true);
     expect(engine.listAgentGroups()).toEqual([]);
   });
+
+  it('renames a group (updates its name) without touching the members', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addAgentGroup({ id: 'g1', name: 'Agent A', stepIds: ['s1', 's2'] });
+    expect(engine.updateAgentGroup('g1', { name: 'Reviewers' })).toBe(true);
+    expect(engine.listAgentGroups()[0]).toMatchObject({ name: 'Reviewers', stepIds: ['s1', 's2'] });
+    // Unknown id is a no-op false (never throws).
+    expect(engine.updateAgentGroup('missing', { name: 'X' })).toBe(false);
+  });
+});
+
+describe('board — group geometry (agentGroupBounds / groupHeaderAtPoint)', () => {
+  // Group box = union of member steps + 16px padding on every side.
+  const withGroup = () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement({
+      kind: 'step',
+      id: 's1',
+      x: 100,
+      y: 100,
+      width: 200,
+      height: 120,
+      name: 'A',
+    });
+    engine.addAgentGroup({ id: 'g1', name: 'Agent', stepIds: ['s1'] });
+    return engine;
+  };
+
+  it('computes the box: 16px sides/bottom + a taller top title band', () => {
+    const boxes = withGroup().agentGroupBounds();
+    expect(boxes).toHaveLength(1);
+    // step (100,100,200,120): x−16, y−32 (title band), width+32, height+32+16.
+    expect(boxes[0]).toMatchObject({
+      group: { id: 'g1' },
+      bounds: { x: 84, y: 68, width: 232, height: 168 },
+    });
+  });
+
+  it('skips a group whose members have all vanished', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addAgentGroup({ id: 'g1', name: 'Ghost', stepIds: ['nope'] });
+    expect(engine.agentGroupBounds()).toEqual([]);
+  });
+
+  it('hits the whole top title band (full width × 32px height), and nothing outside it', () => {
+    const engine = withGroup();
+    // Box is (84,68) → (316,236); the band is the top 32px strip, the step top is at y=100.
+    expect(engine.groupHeaderAtPoint({ x: 100, y: 72 })).toBe('g1');
+    expect(engine.groupHeaderAtPoint({ x: 100, y: 98 })).toBe('g1'); // just above the step, still the band
+    // Far right but still inside the box → the band is FULL width (a long name stays clickable).
+    expect(engine.groupHeaderAtPoint({ x: 310, y: 72 })).toBe('g1');
+    // On/over the member step → no group capture (the step hit-tests first in the UI).
+    expect(engine.groupHeaderAtPoint({ x: 100, y: 130 })).toBeUndefined();
+    // Outside the box (right) → miss.
+    expect(engine.groupHeaderAtPoint({ x: 400, y: 72 })).toBeUndefined();
+    // Far away → miss.
+    expect(engine.groupHeaderAtPoint({ x: 500, y: 500 })).toBeUndefined();
+  });
 });
 
 describe('board — toScene/loadScene round-trip (full process model)', () => {

@@ -79,6 +79,8 @@ export function App({ wiring, participant }: AppProps) {
   const [, forceRender] = useReducer((n: number) => n + 1, 0);
   // Swimlane selection (process entity outside the element selection) → drives the side panel.
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
+  // Group selection (process entity outside the element selection) → drives the side panel (rename).
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   // Latest local viewport (pan/zoom) + canvas size, mirrored from `BoardCanvas`. Kept in a ref (not
   // state): read on demand when creating an item, so it must not trigger a re-render (it changes on
   // every pan/zoom frame). Lets new toolbar items spawn at the center of the visible board.
@@ -358,11 +360,11 @@ export function App({ wiring, participant }: AppProps) {
   const [joinToast, setJoinToast] = useState<string | null>(null);
   const seenPeersRef = useRef<Set<number> | null>(null);
 
-  // Floating properties panel: visible when a lane is selected, or a **step** (click).
+  // Floating properties panel: visible when a lane or group is selected, or a **step** (click).
   const engineSel = space.active?.engine.getSelection() ?? [];
   const stepSelected =
     engineSel.length === 1 && space.active?.engine.board.getElement(engineSel[0]!)?.kind === 'step';
-  const showProps = !!selectedLaneId || stepSelected;
+  const showProps = !!selectedLaneId || !!selectedGroupId || stepSelected;
 
   // Sub-process: creates a **child** whiteboard of the current document (nested in the sidebar)
   // without switching the active document; returns its id to link the step. `null` when no active document.
@@ -517,6 +519,8 @@ export function App({ wiring, participant }: AppProps) {
                     awareness={space.active.awareness}
                     selectedLaneId={selectedLaneId}
                     onSelectLane={setSelectedLaneId}
+                    selectedGroupId={selectedGroupId}
+                    onSelectGroup={setSelectedGroupId}
                     onViewportChange={handleViewportChange}
                     onNavigateSubprocess={space.openDocument}
                     hideZoomControl
@@ -532,6 +536,8 @@ export function App({ wiring, participant }: AppProps) {
                       selectedLaneId={selectedLaneId}
                       onChange={forceRender}
                       onSelectLane={setSelectedLaneId}
+                      selectedGroupId={selectedGroupId}
+                      onSelectGroup={setSelectedGroupId}
                       onCreateSubprocess={createSubprocess}
                       onNavigateSubprocess={space.openDocument}
                     />

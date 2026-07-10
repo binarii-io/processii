@@ -73,6 +73,7 @@ export function WhiteboardEditor({
   className,
 }: WhiteboardEditorProps) {
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [, forceRender] = useReducer((n: number) => n + 1, 0);
 
   // Latest local viewport (pan/zoom) + canvas size, mirrored from `BoardCanvas`. Kept in a ref, not
@@ -116,11 +117,11 @@ export function WhiteboardEditor({
   // toolbar (count) and the panel (selected step/lane) consistent.
   useEffect(() => engine.observe(forceRender), [engine]);
 
-  // Floating properties panel: visible when a lane is selected, or a **step** (click).
+  // Floating properties panel: visible when a lane or group is selected, or a **step** (click).
   const engineSel = engine.getSelection();
   const stepSelected =
     engineSel.length === 1 && engine.board.getElement(engineSel[0]!)?.kind === 'step';
-  const showProps = editable && (!!selectedLaneId || stepSelected);
+  const showProps = editable && (!!selectedLaneId || !!selectedGroupId || stepSelected);
 
   return (
     <div className={className ?? 'relative h-full w-full overflow-hidden'}>
@@ -131,6 +132,8 @@ export function WhiteboardEditor({
           {...(awareness ? { awareness } : {})}
           selectedLaneId={selectedLaneId}
           onSelectLane={setSelectedLaneId}
+          selectedGroupId={selectedGroupId}
+          onSelectGroup={setSelectedGroupId}
           onViewportChange={handleViewportChange}
           onZoomApi={handleZoomApi}
           {...(onNavigateSubprocess ? { onNavigateSubprocess } : {})}
@@ -149,6 +152,8 @@ export function WhiteboardEditor({
             selectedLaneId={selectedLaneId}
             onChange={forceRender}
             onSelectLane={setSelectedLaneId}
+            selectedGroupId={selectedGroupId}
+            onSelectGroup={setSelectedGroupId}
             {...(onCreateSubprocess ? { onCreateSubprocess } : {})}
             {...(onNavigateSubprocess ? { onNavigateSubprocess } : {})}
           />
