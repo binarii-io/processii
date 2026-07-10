@@ -111,7 +111,7 @@ describe('Toolbar — process board', () => {
     expect(engine.listSwimlanes()).toHaveLength(1);
   });
 
-  it('hides the process-modelling tools on a non-process board (default idéation)', () => {
+  it('hides the process-modelling tools on a non-process board (default ideation)', () => {
     const engine = createEngine({ clientId: 1 }); // default boardType = ideation
     const { queryByRole } = render(
       <Toolbar engine={engine} onCreateSubprocess={() => Promise.resolve('c')} />,

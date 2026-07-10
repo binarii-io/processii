@@ -18,7 +18,7 @@ test('create lanes, then detach / move a swimlane block without crashing', async
   await expect(canvas).toBeVisible();
 
   // Swimlanes (and the other process-modelling tools) are exposed only on the **process** board
-  // type; a fresh board defaults to idéation. Switch it via the board-type picker first.
+  // type; a fresh board defaults to ideation. Switch it via the board-type picker first.
   await page.getByRole('button', { name: /^Type de board/ }).click();
   await page.getByRole('button', { name: 'Process', exact: true }).click();
 
