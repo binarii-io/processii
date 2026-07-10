@@ -87,4 +87,182 @@ describe('agent-ops', () => {
       expect(o.inputSchema).toBeDefined();
     }
   });
+
+  // --- element CRUD ---
+
+  it('add_element creates a free shape (with a label), returns its id, visible via read_board', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_element').run(engine, {
+      kind: 'rectangle',
+      x: 10,
+      y: 20,
+      width: 200,
+      height: 100,
+      text: 'Note',
+    }) as { id: string };
+    expect(id).toMatch(/^el:/);
+    const scene = op('read_board').run(engine, {}) as Scene;
+    expect(scene.elements).toHaveLength(1);
+    expect(scene.elements[0]).toMatchObject({
+      kind: 'rectangle',
+      id,
+      x: 10,
+      y: 20,
+      width: 200,
+      height: 100,
+      text: 'Note',
+    });
+    // Like every agent write, add_element must not touch the local selection (headless edits).
+    expect(engine.getSelection()).toEqual([]);
+  });
+
+  it('add_element applies sensible size defaults and omits text when unset', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_element').run(engine, { kind: 'ellipse', x: 0, y: 0 }) as { id: string };
+    const el = engine.board.getElement(id)!;
+    expect(el).toMatchObject({ kind: 'ellipse', width: 120, height: 80 });
+    expect(el).not.toHaveProperty('text');
+  });
+
+  it('add_element accepts an explicit id and rejects an unsupported kind', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_element').run(engine, {
+      kind: 'text',
+      x: 0,
+      y: 0,
+      text: 'hi',
+      id: 'el:custom',
+    }) as { id: string };
+    expect(id).toBe('el:custom');
+    expect(engine.board.getElement('el:custom')).toMatchObject({ kind: 'text', text: 'hi' });
+    // `step` is not a free shape (use add_step): the enum rejects it.
+    expect(() => op('add_element').run(engine, { kind: 'step', x: 0, y: 0 })).toThrow(AgentOpError);
+  });
+
+  it('add_swimlane creates a lane, returns its id, visible via read_board', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_swimlane').run(engine, {
+      name: 'Customer',
+      laneType: 'user',
+      color: 'blue',
+    }) as { id: string };
+    expect(id).toMatch(/^lane:/);
+    const scene = op('read_board').run(engine, {}) as Scene;
+    expect(scene.swimlanes).toHaveLength(1);
+    expect(scene.swimlanes[0]).toMatchObject({
+      id,
+      name: 'Customer',
+      laneType: 'user',
+      color: 'blue',
+    });
+  });
+
+  it('add_swimlane rejects an unknown color with a typed AgentOpError', () => {
+    const engine = createEngine({ clientId: 1 });
+    expect(() => op('add_swimlane').run(engine, { color: 'chartreuse' })).toThrow(AgentOpError);
+    expect(op('read_board').run(engine, {}) as Scene).toMatchObject({ swimlanes: [] });
+  });
+
+  it('add_group creates a named group over steps, returns its id, visible via read_board', () => {
+    const engine = createEngine({ clientId: 1 });
+    const a = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    const { id } = op('add_group').run(engine, { name: 'Agent', stepIds: [a.id] }) as {
+      id: string;
+    };
+    expect(id).toMatch(/^group:/);
+    const scene = op('read_board').run(engine, {}) as Scene;
+    expect(scene.agentGroups).toHaveLength(1);
+    expect(scene.agentGroups[0]).toMatchObject({ id, name: 'Agent', stepIds: [a.id] });
+  });
+
+  it('add_group rejects a non-array stepIds with a typed AgentOpError', () => {
+    const engine = createEngine({ clientId: 1 });
+    expect(() => op('add_group').run(engine, { stepIds: 'nope' })).toThrow(AgentOpError);
+  });
+
+  it('move_element shifts an element by a relative delta', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_step').run(engine, { name: 'A', x: 40, y: 20 }) as { id: string };
+    const res = op('move_element').run(engine, { id, dx: 10, dy: -5 }) as { id: string };
+    expect(res.id).toBe(id);
+    expect(engine.board.getElement(id)).toMatchObject({ x: 50, y: 15 });
+  });
+
+  it('move_element throws AgentOpError on an unknown id and an invalid delta', () => {
+    const engine = createEngine({ clientId: 1 });
+    expect(() => op('move_element').run(engine, { id: 'ghost', dx: 1, dy: 1 })).toThrow(
+      AgentOpError,
+    );
+    expect(() => op('move_element').run(engine, { id: 'x', dx: Infinity, dy: 0 })).toThrow(
+      AgentOpError,
+    );
+  });
+
+  it('update_element patches only the provided fields (text/position/size/colors)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_element').run(engine, {
+      kind: 'rectangle',
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 60,
+      text: 'old',
+    }) as { id: string };
+    const res = op('update_element').run(engine, {
+      id,
+      text: 'new',
+      x: 5,
+      width: 140,
+      fill: 'accent',
+    }) as { id: string };
+    expect(res.id).toBe(id);
+    expect(engine.board.getElement(id)).toMatchObject({
+      text: 'new',
+      x: 5,
+      y: 0, // untouched
+      width: 140,
+      height: 60, // untouched
+      fill: 'accent',
+    });
+  });
+
+  it('update_element throws AgentOpError on an unknown id and on an invalid patch value', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    expect(() => op('update_element').run(engine, { id: 'ghost', text: 'x' })).toThrow(
+      AgentOpError,
+    );
+    // A non-positive width is rejected at the input boundary (before touching the board).
+    expect(() => op('update_element').run(engine, { id, width: -10 })).toThrow(AgentOpError);
+  });
+
+  it('delete_element removes an element, gone from read_board', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    const res = op('delete_element').run(engine, { id }) as { id: string };
+    expect(res.id).toBe(id);
+    expect((op('read_board').run(engine, {}) as Scene).elements).toEqual([]);
+  });
+
+  it('delete_element throws AgentOpError on an unknown id', () => {
+    const engine = createEngine({ clientId: 1 });
+    expect(() => op('delete_element').run(engine, { id: 'ghost' })).toThrow(AgentOpError);
+  });
+
+  it('exposes all ten ops resolvable by name', () => {
+    const names = AGENT_OPS.map((o) => o.name);
+    expect(names).toEqual([
+      'read_board',
+      'add_step',
+      'connect',
+      'set_board_type',
+      'add_element',
+      'add_swimlane',
+      'add_group',
+      'move_element',
+      'update_element',
+      'delete_element',
+    ]);
+    for (const name of names) expect(getAgentOp(name)?.name).toBe(name);
+  });
 });
