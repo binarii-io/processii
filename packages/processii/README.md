@@ -383,7 +383,9 @@ null` (the visible world rect, from `visibleWorldRect`) and `onCenterView(world)
   `PresenceAvatars`, **`BoardTypePicker`**, **`ZoomControl`**) + awareness presence helpers
   (`publishCursor`, `publishSelection`, `publishIdentity`, `observePresence`, `readRemoteCursors`,
   `readRemoteSelections`, `readParticipants`, `presenceCssColor`, `initials`) to compose a custom
-  layout (what the standalone does).
+  layout (what the standalone does). To render an **entirely custom toolbar / pickers** (no styled
+  component at all), consume the **headless hooks** instead — see
+  [Composable / headless chrome](#composable--headless-chrome-hooks).
   - **`BoardTypePicker`** — self-contained board-type selector (process/architecture/idéation): it
     tracks the engine (reflects collab/undo via `board.observe`) and writes via `setBoardType`. Drop
     it anywhere in the host chrome (e.g. a floating bottom bar). The chosen type **gates the
@@ -402,6 +404,51 @@ null` (the visible world rect, from `visibleWorldRect`) and `onCenterView(world)
 
 Canvas colors are resolved from the **semantic tokens** read on the active theme (light/dark),
 never hard-coded.
+
+## Composable / headless chrome (hooks)
+
+The editing **chrome** (toolbar, background picker, board-type picker) is available at **two
+altitudes**, so a host can either take the batteries-included default **or** render its own UI with
+zero style overrides:
+
+- **RENDER — styled components (default, "batteries included").** `Toolbar`, `BoardTypePicker` and
+  the background block ship a themed UI that just works (semantic tokens, a11y, tooltips). Drop them
+  in and go.
+- **LOGIC — headless hooks (zero styling).** When a host wants its **own** look (a different design
+  system, a command palette, keyboard shortcuts) it consumes the same **logic** as hooks/data and
+  renders whatever chrome it likes — no forking, no fragile CSS overrides. The styled components
+  above are **thin wrappers over these very hooks**, so both altitudes stay in lock-step.
+
+```ts
+import {
+  useWhiteboardTools, // headless tool descriptors (host renders its own toolbar)
+  useBoardBackground, // headless board-background state + palette
+  BOARD_BACKGROUNDS, // the soft-tone palette (reuse instead of redeclaring)
+  BOARD_TYPE_META, // { label, icon } per board type (reuse labels/icons)
+} from '@binarii/processii';
+```
+
+- **`useWhiteboardTools(engine, opts?) → WhiteboardTool[]`** — the tools of the board as **descriptors**
+  a host maps to its own buttons: `{ id, label, icon (Lucide component), group ('draw' | 'process'),
+disabled, run() }`. It applies the **same board-type gating** as the styled toolbar (the process
+  tools — `step`/`subprocess`/`swimlane`/`group` — appear **only** on the `process` board) and the
+  same `disabled` rules (`connector` needs exactly 2 selected, `group` needs ≥ 1). `subprocess` is
+  present only when `opts.onCreateSubprocess` is provided. The hook subscribes to `engine.board.observe`,
+  so the list **recomputes on a shared board-type change** (a peer / undo / the `BoardTypePicker`);
+  selection-driven states come from `opts.selectionCount` (the host owns the local selection). Options
+  mirror the `Toolbar` props: `selectionCount`, `getSpawnCenter`, `getViewRect`, `onCenterView`,
+  `onCreateSubprocess`, `onChange` — all optional, same fallbacks (fixed placement, legacy swimlane
+  block).
+- **`useBoardBackground(engine, onChange?) → { current, set, palette }`** — the **shared** board
+  background as `current: string | null` (`null` = theme default), a `set(value | null)` writer
+  (`null`/empty resets), and the `palette` (same reference as `BOARD_BACKGROUNDS`). Tracks
+  `engine.board.observe` so `current` reflects a peer/undo change.
+- **`BOARD_TYPE_META`** — `Record<BoardType, { label, icon }>` (label + Lucide icon per board type),
+  so a host's own board-type chrome reuses the canonical labels/icons instead of redeclaring them.
+
+> **DOM-free core stays DOM-free.** These are **React hooks** (they live in the React layer), not
+> core modules — a host that renders its own toolbar still imports them from the package root. They
+> add **no runtime dependency** (only React, already a peer dep, and `lucide-react`, already used).
 
 ## Agent operations (`@binarii/processii/agent-ops`)
 
@@ -493,6 +540,10 @@ import {
   importFromDrawio, // draw.io interop
   exportToExcalidraw,
   importFromExcalidraw, // Excalidraw interop
+  useWhiteboardTools,
+  useBoardBackground,
+  BOARD_BACKGROUNDS,
+  BOARD_TYPE_META, // headless chrome (compose your own toolbar/pickers)
 } from '@binarii/processii';
 
 const engine = createEngine(); // offline, ready

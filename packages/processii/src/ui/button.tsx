@@ -22,7 +22,7 @@ export const buttonVariants = cva(
     variants: {
       variant: {
         primary: 'bg-accent text-accent-fg hover:bg-accent-hover',
-        secondary: 'bg-surface text-text border border-border hover:bg-bg',
+        secondary: 'bg-surface text-text border border-border hover:bg-accent-subtle',
         ghost: 'bg-transparent text-text hover:bg-accent-subtle',
         danger: 'bg-danger text-danger-fg hover:bg-danger-hover',
         link: 'bg-transparent text-accent underline-offset-4 hover:underline',

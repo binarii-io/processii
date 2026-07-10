@@ -20,7 +20,7 @@ export const iconButtonVariants = cva(
     variants: {
       variant: {
         primary: 'bg-accent text-accent-fg hover:bg-accent-hover',
-        secondary: 'bg-surface text-text border border-border hover:bg-bg',
+        secondary: 'bg-surface text-text border border-border hover:bg-accent-subtle',
         ghost: 'bg-transparent text-muted hover:bg-accent-subtle hover:text-text',
         danger: 'bg-danger text-danger-fg hover:bg-danger-hover',
       },

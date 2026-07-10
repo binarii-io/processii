@@ -11,22 +11,11 @@ import {
   type IconButtonProps,
   type LucideProps,
 } from './ui/index.js';
-import {
-  Boxes,
-  Circle,
-  Group,
-  RectangleHorizontal,
-  Redo2,
-  Rows3,
-  Spline,
-  Square,
-  StickyNote,
-  Trash2,
-  Type,
-  Undo2,
-} from 'lucide-react';
+import { Redo2, Trash2, Undo2 } from 'lucide-react';
 import type { BoundingBox, WhiteboardEngine } from './engine.js';
 import type { Point } from './viewport.js';
+import { useWhiteboardTools, type WhiteboardTool } from './use-whiteboard-tools.js';
+import { useBoardBackground } from './use-board-background.js';
 
 /**
  * **Local** editing toolbar: adds shapes, deletes the selection, and exposes
@@ -67,12 +56,6 @@ export interface ToolbarProps {
   readonly onCenterView?: (world: Point) => void;
 }
 
-let seq = 0;
-function elementId(): string {
-  seq += 1;
-  return `el-${Date.now().toString(36)}-${seq}`;
-}
-
 /**
  * **Icon-only** tool button: the Lucide icon is decorative (`aria-hidden`) and the `label`
  * serves both as `aria-label` (accessibility, required by `IconButton`) and as a tooltip on
@@ -83,6 +66,7 @@ function ToolButton({
   tooltip,
   icon: Icon,
   variant = 'secondary',
+  beforeSeparator = false,
   ...props
 }: {
   readonly label: string;
@@ -93,6 +77,8 @@ function ToolButton({
    */
   readonly tooltip?: ReactNode;
   readonly icon: ComponentType<LucideProps>;
+  /** Renders a vertical divider just before the button (group boundary). */
+  readonly beforeSeparator?: boolean;
 } & Omit<IconButtonProps, 'label' | 'children' | 'size'>) {
   const button = (
     <IconButton size="sm" variant={variant} label={label} {...props}>
@@ -100,48 +86,51 @@ function ToolButton({
     </IconButton>
   );
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        {props.disabled ? (
-          /*
-            A disabled <button> emits no pointer/focus events, so it can't be a
-            tooltip trigger on its own. Only in that case, wrap it in a focusable
-            span that stands in as the trigger — the caption (Radix's
-            `aria-describedby`) then lands on the span the user hovers/focuses.
-            Enabled buttons stay their own trigger, so the description keeps
-            being announced on the focused button (no screen-reader regression).
-          */
-          <span className="inline-flex shrink-0" tabIndex={0}>
-            {button}
-          </span>
-        ) : (
-          button
-        )}
-      </TooltipTrigger>
-      <TooltipContent>{tooltip ?? label}</TooltipContent>
-    </Tooltip>
+    <>
+      {beforeSeparator && <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          {props.disabled ? (
+            /*
+              A disabled <button> emits no pointer/focus events, so it can't be a
+              tooltip trigger on its own. Only in that case, wrap it in a focusable
+              span that stands in as the trigger — the caption (Radix's
+              `aria-describedby`) then lands on the span the user hovers/focuses.
+              Enabled buttons stay their own trigger, so the description keeps
+              being announced on the focused button (no screen-reader regression).
+            */
+            <span className="inline-flex shrink-0" tabIndex={0}>
+              {button}
+            </span>
+          ) : (
+            button
+          )}
+        </TooltipTrigger>
+        <TooltipContent>{tooltip ?? label}</TooltipContent>
+      </Tooltip>
+    </>
   );
 }
 
-/** **Board background** palette (CSS literals) offered by the toolbar color block. */
-const BOARD_BACKGROUNDS: readonly { value: string; label: string }[] = [
-  { value: '#ffffff', label: 'Blanc' },
-  { value: '#f4f4f5', label: 'Gris clair' },
-  { value: '#fef9c3', label: 'Jaune' },
-  { value: '#dcfce7', label: 'Vert' },
-  { value: '#dbeafe', label: 'Bleu' },
-  { value: '#fae8ff', label: 'Violet' },
-  { value: '#ffe4e6', label: 'Rose' },
-  { value: '#fff7ed', label: 'Crème' },
-  { value: '#e7e5e4', label: 'Pierre' },
-  { value: '#334155', label: 'Ardoise' },
-  { value: '#0c0c0e', label: 'Noir' },
-];
+/**
+ * Tooltip caption for a headless tool descriptor. Most tools use their label; the connector explains
+ * its selection requirement (surfaced even while disabled) — matching the 0.5.0 toolbar copy.
+ */
+function toolTooltip(tool: WhiteboardTool): ReactNode {
+  if (tool.id === 'connector') {
+    return tool.disabled
+      ? 'Sélectionnez exactement 2 éléments pour les connecter'
+      : 'Connecter les 2 éléments sélectionnés';
+  }
+  return undefined;
+}
 
 /**
  * Toolbar **color block**: changes the **board background color** (shared in collab via
  * `engine.setBackground`). The swatch reflects the current background (gradient = theme default);
- * the popover offers a soft-tone palette + a **reset to default**.
+ * the popover offers a soft-tone palette + a **reset to default**. The background state, palette and
+ * write are driven by the headless {@link useBoardBackground} hook (single source of truth, reusable
+ * by any host chrome).
  */
 function BackgroundPicker({
   engine,
@@ -150,11 +139,7 @@ function BackgroundPicker({
   readonly engine: WhiteboardEngine;
   readonly onChange?: (() => void) | undefined;
 }) {
-  const current = engine.getBackground();
-  const set = (value: string | null): void => {
-    engine.setBackground(value);
-    onChange?.();
-  };
+  const { current, set, palette } = useBoardBackground(engine, onChange);
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -179,7 +164,7 @@ function BackgroundPicker({
       </PopoverTrigger>
       <PopoverContent className="w-auto p-2" aria-label="Couleur du fond du board">
         <div className="grid grid-cols-6 gap-1">
-          {BOARD_BACKGROUNDS.map((c) => {
+          {palette.map((c) => {
             const active = current === c.value;
             return (
               <button
@@ -233,30 +218,18 @@ export function Toolbar({
     return history.observe(refresh);
   }, [history]);
 
-  const add = (input: Parameters<WhiteboardEngine['addElement']>[0]): void => {
-    engine.addElement(input);
-    onChange?.();
-  };
-
-  // Top-left corner (world coords) for a new shape of the given size so that it ends up **centered
-  // on the visible canvas**. Falls back to the historical fixed position when the viewport center
-  // is unknown — toolbar used standalone (no editor) or before the first canvas measure.
-  const placeAt = (
-    width: number,
-    height: number,
-    fallbackX: number,
-    fallbackY: number,
-  ): { x: number; y: number } => {
-    const center = getSpawnCenter?.();
-    if (!center) return { x: fallbackX, y: fallbackY };
-    return { x: Math.round(center.x - width / 2), y: Math.round(center.y - height / 2) };
-  };
-
-  // Process-modelling tools (step, sub-process, swimlane, group) belong to the **process** board type
-  // only — on architecture/ideation boards they are noise. The generic drawing tools (rectangle,
-  // ellipse, text, sticky, connector) stay on every type. Re-reads on each render; a board-type change
-  // re-renders the toolbar via the host's shared `onChange` (the BoardTypePicker triggers it).
-  const isProcess = engine.getBoardType() === 'process';
+  // Tool descriptors (logic + board-type gating + disabled states) come from the headless
+  // `useWhiteboardTools` hook — the SINGLE source of truth shared with any host that renders its own
+  // toolbar. The styled `Toolbar` only maps each descriptor to a `ToolButton`. Undo/redo, delete and
+  // the background block are chrome-specific (not "tools") and stay local here.
+  const tools = useWhiteboardTools(engine, {
+    selectionCount,
+    ...(getSpawnCenter ? { getSpawnCenter } : {}),
+    ...(getViewRect ? { getViewRect } : {}),
+    ...(onCenterView ? { onCenterView } : {}),
+    ...(onCreateSubprocess ? { onCreateSubprocess } : {}),
+    ...(onChange ? { onChange } : {}),
+  });
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -265,161 +238,23 @@ export function Toolbar({
         role="toolbar"
         aria-label="Outils de dessin"
       >
-        <ToolButton
-          label="Rectangle"
-          icon={Square}
-          onClick={() =>
-            add({
-              kind: 'rectangle',
-              id: elementId(),
-              ...placeAt(120, 80, 40, 40),
-              width: 120,
-              height: 80,
-              fill: 'surface', // white background by default (theme token: white in light, card in dark)
-              stroke: 'transparent', // no outline by default — the shape is detached by its shadow
-            })
-          }
-        />
-        <ToolButton
-          label="Ellipse"
-          icon={Circle}
-          onClick={() =>
-            add({
-              kind: 'ellipse',
-              id: elementId(),
-              ...placeAt(100, 100, 80, 80),
-              width: 100,
-              height: 100,
-              fill: 'surface',
-              stroke: 'transparent',
-            })
-          }
-        />
-        <ToolButton
-          label="Texte"
-          icon={Type}
-          onClick={() =>
-            add({
-              kind: 'text',
-              id: elementId(),
-              ...placeAt(160, 32, 60, 60),
-              width: 160,
-              height: 32,
-              text: 'Texte',
-            })
-          }
-        />
-        <ToolButton
-          label="Sticky"
-          icon={StickyNote}
-          onClick={() =>
-            add({
-              kind: 'text',
-              id: elementId(),
-              ...placeAt(140, 100, 60, 60),
-              width: 140,
-              height: 100,
-              text: 'Note',
-              fill: 'warning-subtle',
-            })
-          }
-        />
-        <ToolButton
-          label="Connecteur"
-          tooltip={
-            selectionCount === 2
-              ? 'Connecter les 2 éléments sélectionnés'
-              : 'Sélectionnez exactement 2 éléments pour les connecter'
-          }
-          icon={Spline}
-          disabled={selectionCount !== 2}
-          onClick={() => {
-            const [a, b] = engine.getSelection();
-            if (a && b) {
-              engine.connect(elementId(), a, b, { endArrow: true });
-              onChange?.();
-            }
-          }}
-        />
-        {isProcess && (
-          <>
-            <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+        {tools.map((tool, i) => {
+          // A separator precedes the FIRST process tool — visually splitting the generic drawing
+          // tools from the process-modelling ones (matches 0.5.0). Since process tools only appear on
+          // a process board, the boundary is "the previous tool was in a different group".
+          const withSeparator = i > 0 && tool.group !== tools[i - 1]?.group;
+          return (
             <ToolButton
-              label="Étape"
-              icon={RectangleHorizontal}
-              onClick={() =>
-                add({
-                  kind: 'step',
-                  id: elementId(),
-                  ...placeAt(200, 120, 80, 80),
-                  width: 200,
-                  height: 120,
-                  name: 'Étape',
-                  fill: 'surface', // default item: white background + no outline, detached by its shadow
-                  stroke: 'transparent',
-                })
-              }
+              key={tool.id}
+              label={tool.label}
+              icon={tool.icon}
+              disabled={tool.disabled}
+              tooltip={toolTooltip(tool)}
+              beforeSeparator={withSeparator}
+              onClick={tool.run}
             />
-            {onCreateSubprocess && (
-              <ToolButton
-                label="Sous-process"
-                icon={Boxes}
-                onClick={() => {
-                  // The host app creates the child whiteboard (parent = current doc) and returns its
-                  // id; we then add a linked step. Failure/cancel (null) → nothing is added.
-                  void onCreateSubprocess().then((ref) => {
-                    if (!ref) return;
-                    add({
-                      kind: 'step',
-                      id: elementId(),
-                      ...placeAt(200, 120, 80, 80),
-                      width: 200,
-                      height: 120,
-                      name: 'Sous-process',
-                      subprocessRef: ref,
-                    });
-                  });
-                }}
-              />
-            )}
-            <ToolButton
-              label="Swimlane"
-              icon={Rows3}
-              onClick={() => {
-                // Smart placement: join the cluster the user is looking at, or start a fresh one
-                // centered on the view (see `engine.addSwimlaneInView`).
-                const visible = getViewRect?.() ?? undefined;
-                const { band } = engine.addSwimlaneInView(
-                  { id: elementId(), name: 'Bande', color: 'neutral', height: 180 },
-                  visible,
-                );
-                onChange?.();
-                // Always recentre the view on the new lane — both axes, on its band center. A fresh
-                // cluster is created centered on the view → no-op there; appending into an existing
-                // cluster scrolls the view onto the new band (horizontally onto the cluster center,
-                // vertically onto the lane).
-                if (onCenterView && visible) {
-                  onCenterView({
-                    x: band.x + band.width / 2,
-                    y: band.y + band.height / 2,
-                  });
-                }
-              }}
-            />
-            <ToolButton
-              label="Groupe"
-              icon={Group}
-              disabled={selectionCount < 1}
-              onClick={() => {
-                const ids = engine.getSelection();
-                if (ids.length > 0) {
-                  engine.addAgentGroup({ id: elementId(), name: 'Groupe', stepIds: ids });
-                  onChange?.();
-                }
-              }}
-            />
-          </>
-        )}
+          );
+        })}
         <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
         <BackgroundPicker engine={engine} onChange={onChange} />
         <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />

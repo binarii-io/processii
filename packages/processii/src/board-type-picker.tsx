@@ -4,8 +4,16 @@ import { Popover, PopoverContent, PopoverTrigger, type LucideProps } from './ui/
 import type { WhiteboardEngine } from './engine.js';
 import { BOARD_TYPES, type BoardType } from './scene.js';
 
-/** Type-of-board metadata (label + icon) shown by the {@link BoardTypePicker}. */
-const BOARD_TYPE_META: Record<BoardType, { label: string; icon: ComponentType<LucideProps> }> = {
+/**
+ * Type-of-board metadata (label + icon) shown by the {@link BoardTypePicker}. **Exported** so a host
+ * rendering its **own** board-type chrome (its own picker, a menu, a badge) reuses the exact same
+ * labels and Lucide icons instead of redeclaring them — the styled default {@link BoardTypePicker}
+ * consumes this same record.
+ */
+export const BOARD_TYPE_META: Record<
+  BoardType,
+  { label: string; icon: ComponentType<LucideProps> }
+> = {
   process: { label: 'Process', icon: Workflow },
   architecture: { label: 'Architecture', icon: Network },
   ideation: { label: 'Idéation', icon: Lightbulb },
