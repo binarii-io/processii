@@ -92,6 +92,7 @@ export {
   screenToWorld,
   worldToScreen,
   viewportCenter,
+  visibleWorldRect,
   panBy,
   zoomAt,
   setZoom,

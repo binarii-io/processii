@@ -25,7 +25,7 @@ import {
   Type,
   Undo2,
 } from 'lucide-react';
-import type { WhiteboardEngine } from './engine.js';
+import type { BoundingBox, WhiteboardEngine } from './engine.js';
 import type { Point } from './viewport.js';
 
 /**
@@ -52,6 +52,19 @@ export interface ToolbarProps {
    * `WhiteboardEditor` from the canvas viewport; absent → the historical fixed placement is used.
    */
   readonly getSpawnCenter?: () => Point | null;
+  /**
+   * Returns the **world rectangle** currently visible on the canvas (see `visibleWorldRect`), or
+   * `null` if not known yet. Drives **context-aware swimlane placement**: a new lane joins the
+   * cluster the user is looking at, or — when none is on screen — starts a fresh cluster centered on
+   * the view. Wired by `WhiteboardEditor` from the canvas viewport; absent → the historical
+   * "stack onto the first block" placement is used.
+   */
+  readonly getViewRect?: () => BoundingBox | null;
+  /**
+   * Pans the view so the given world point is centered (e.g. the canvas `ZoomApi.centerOn`). When
+   * provided, creating a swimlane that lands off-screen recentres the view to reveal it.
+   */
+  readonly onCenterView?: (world: Point) => void;
 }
 
 let seq = 0;
@@ -203,6 +216,8 @@ export function Toolbar({
   selectionCount = 0,
   onCreateSubprocess,
   getSpawnCenter,
+  getViewRect,
+  onCenterView,
 }: ToolbarProps) {
   const history = engine.history();
   const [canUndo, setCanUndo] = useState(history.canUndo());
@@ -236,6 +251,12 @@ export function Toolbar({
     if (!center) return { x: fallbackX, y: fallbackY };
     return { x: Math.round(center.x - width / 2), y: Math.round(center.y - height / 2) };
   };
+
+  // Process-modelling tools (step, sub-process, swimlane, group) belong to the **process** board type
+  // only — on architecture/ideation boards they are noise. The generic drawing tools (rectangle,
+  // ellipse, text, sticky, connector) stay on every type. Re-reads on each render; a board-type change
+  // re-renders the toolbar via the host's shared `onChange` (the BoardTypePicker triggers it).
+  const isProcess = engine.getBoardType() === 'process';
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -320,71 +341,85 @@ export function Toolbar({
             }
           }}
         />
-        <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
-        <ToolButton
-          label="Étape"
-          icon={RectangleHorizontal}
-          onClick={() =>
-            add({
-              kind: 'step',
-              id: elementId(),
-              ...placeAt(200, 120, 80, 80),
-              width: 200,
-              height: 120,
-              name: 'Étape',
-              fill: 'surface', // default item: white background + no outline, detached by its shadow
-              stroke: 'transparent',
-            })
-          }
-        />
-        {onCreateSubprocess && (
-          <ToolButton
-            label="Sous-process"
-            icon={Boxes}
-            onClick={() => {
-              // The host app creates the child whiteboard (parent = current doc) and returns its
-              // id; we then add a linked step. Failure/cancel (null) → nothing is added.
-              void onCreateSubprocess().then((ref) => {
-                if (!ref) return;
+        {isProcess && (
+          <>
+            <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+            <ToolButton
+              label="Étape"
+              icon={RectangleHorizontal}
+              onClick={() =>
                 add({
                   kind: 'step',
                   id: elementId(),
                   ...placeAt(200, 120, 80, 80),
                   width: 200,
                   height: 120,
-                  name: 'Sous-process',
-                  subprocessRef: ref,
-                });
-              });
-            }}
-          />
+                  name: 'Étape',
+                  fill: 'surface', // default item: white background + no outline, detached by its shadow
+                  stroke: 'transparent',
+                })
+              }
+            />
+            {onCreateSubprocess && (
+              <ToolButton
+                label="Sous-process"
+                icon={Boxes}
+                onClick={() => {
+                  // The host app creates the child whiteboard (parent = current doc) and returns its
+                  // id; we then add a linked step. Failure/cancel (null) → nothing is added.
+                  void onCreateSubprocess().then((ref) => {
+                    if (!ref) return;
+                    add({
+                      kind: 'step',
+                      id: elementId(),
+                      ...placeAt(200, 120, 80, 80),
+                      width: 200,
+                      height: 120,
+                      name: 'Sous-process',
+                      subprocessRef: ref,
+                    });
+                  });
+                }}
+              />
+            )}
+            <ToolButton
+              label="Swimlane"
+              icon={Rows3}
+              onClick={() => {
+                // Smart placement: join the cluster the user is looking at, or start a fresh one
+                // centered on the view (see `engine.addSwimlaneInView`).
+                const visible = getViewRect?.() ?? undefined;
+                const { band } = engine.addSwimlaneInView(
+                  { id: elementId(), name: 'Bande', color: 'neutral', height: 180 },
+                  visible,
+                );
+                onChange?.();
+                // Always recentre the view on the new lane — both axes, on its band center. A fresh
+                // cluster is created centered on the view → no-op there; appending into an existing
+                // cluster scrolls the view onto the new band (horizontally onto the cluster center,
+                // vertically onto the lane).
+                if (onCenterView && visible) {
+                  onCenterView({
+                    x: band.x + band.width / 2,
+                    y: band.y + band.height / 2,
+                  });
+                }
+              }}
+            />
+            <ToolButton
+              label="Groupe"
+              icon={Group}
+              disabled={selectionCount < 1}
+              onClick={() => {
+                const ids = engine.getSelection();
+                if (ids.length > 0) {
+                  engine.addAgentGroup({ id: elementId(), name: 'Groupe', stepIds: ids });
+                  onChange?.();
+                }
+              }}
+            />
+          </>
         )}
-        <ToolButton
-          label="Swimlane"
-          icon={Rows3}
-          onClick={() => {
-            engine.addSwimlane({
-              id: elementId(),
-              name: 'Bande',
-              order: engine.listSwimlanes().length,
-              color: 'neutral',
-              height: 180,
-            });
-            onChange?.();
-          }}
-        />
-        <ToolButton
-          label="Groupe"
-          icon={Group}
-          disabled={selectionCount < 1}
-          onClick={() => {
-            const ids = engine.getSelection();
-            if (ids.length > 0) {
-              engine.addAgentGroup({ id: elementId(), name: 'Groupe', stepIds: ids });
-              onChange?.();
-            }
-          }}
-        />
         <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
         <BackgroundPicker engine={engine} onChange={onChange} />
         <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />

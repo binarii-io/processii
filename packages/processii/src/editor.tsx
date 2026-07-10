@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { CrdtAwareness, CrdtDoc } from './crdt/index.js';
-import { engineFromDoc, type WhiteboardEngine } from './engine.js';
+import { engineFromDoc, type BoundingBox, type WhiteboardEngine } from './engine.js';
 import { publishIdentity } from './presence.js';
-import { BoardCanvas } from './board-canvas.js';
+import { BoardCanvas, type ZoomApi } from './board-canvas.js';
 import { SidePanel } from './side-panel.js';
 import { Toolbar } from './toolbar.js';
-import { viewportCenter, type Point, type Size, type Viewport } from './viewport.js';
+import {
+  viewportCenter,
+  visibleWorldRect,
+  type Point,
+  type Size,
+  type Viewport,
+} from './viewport.js';
 
 /**
  * Presence identity of the local collaborator (name + ui-kit token color) — displayed on the
@@ -84,6 +90,22 @@ export function WhiteboardEditor({
       viewRef.current ? viewportCenter(viewRef.current.viewport, viewRef.current.size) : null,
     [],
   );
+  // World rectangle currently on screen — drives context-aware swimlane placement (join the
+  // looked-at cluster vs. a fresh centered one).
+  const getViewRect = useCallback(
+    (): BoundingBox | null =>
+      viewRef.current ? visibleWorldRect(viewRef.current.viewport, viewRef.current.size) : null,
+    [],
+  );
+  // Imperative view control from the canvas (pan-to-center) — lets a newly created off-screen lane
+  // be revealed.
+  const zoomApiRef = useRef<ZoomApi | null>(null);
+  const handleZoomApi = useCallback((api: ZoomApi): void => {
+    zoomApiRef.current = api;
+  }, []);
+  const centerView = useCallback((world: Point): void => {
+    zoomApiRef.current?.centerOn(world);
+  }, []);
 
   // Publishes the local identity (name/color) into the awareness — once per (awareness, collaborator).
   useEffect(() => {
@@ -110,6 +132,7 @@ export function WhiteboardEditor({
           selectedLaneId={selectedLaneId}
           onSelectLane={setSelectedLaneId}
           onViewportChange={handleViewportChange}
+          onZoomApi={handleZoomApi}
           {...(onNavigateSubprocess ? { onNavigateSubprocess } : {})}
         />
       </div>
@@ -142,6 +165,8 @@ export function WhiteboardEditor({
               onChange={forceRender}
               selectionCount={engineSel.length}
               getSpawnCenter={getSpawnCenter}
+              getViewRect={getViewRect}
+              onCenterView={centerView}
               {...(onCreateSubprocess ? { onCreateSubprocess } : {})}
             />
           </div>

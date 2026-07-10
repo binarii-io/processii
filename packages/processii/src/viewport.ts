@@ -73,6 +73,27 @@ export function viewportCenter(viewport: Viewport, size: Size): Point {
   return screenToWorld(viewport, { x: size.width / 2, y: size.height / 2 });
 }
 
+/**
+ * World **rectangle** currently visible on a canvas of the given CSS-pixel size, under this
+ * viewport: the on-screen region `[0, width] × [0, height]` mapped back into world coordinates
+ * (top-left = `screenToWorld(0, 0)`, extents divided by the zoom). Pure companion of
+ * {@link viewportCenter}; lets a host reason about *what the user is currently looking at* (e.g.
+ * whether an existing swimlane cluster is on screen), not only where the view center is. The result
+ * is structurally a world `BoundingBox`.
+ */
+export function visibleWorldRect(
+  viewport: Viewport,
+  size: Size,
+): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } {
+  const topLeft = screenToWorld(viewport, { x: 0, y: 0 });
+  return {
+    x: topLeft.x,
+    y: topLeft.y,
+    width: size.width / viewport.zoom,
+    height: size.height / viewport.zoom,
+  };
+}
+
 /** Pan: translates the view by a **screen** delta (px). The zoom is unchanged. */
 export function panBy(viewport: Viewport, dxScreen: number, dyScreen: number): Viewport {
   return { x: viewport.x + dxScreen, y: viewport.y + dyScreen, zoom: viewport.zoom };
