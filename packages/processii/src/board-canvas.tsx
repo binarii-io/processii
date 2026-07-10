@@ -50,6 +50,8 @@ export interface ZoomApi {
   readonly zoomIn: () => void;
   readonly zoomOut: () => void;
   readonly reset: () => void;
+  /** Pans the view (keeping the current zoom) so the world point `world` sits at the canvas center. */
+  readonly centerOn: (world: Point) => void;
 }
 
 export interface BoardCanvasProps {
@@ -422,9 +424,18 @@ export function BoardCanvas({
     () => setViewport(zoomAt(vpRef.current, 1 / 1.2, { x: size.w / 2, y: size.h / 2 })),
     [setViewport, size.w, size.h],
   );
+  // Pans so a world point lands at the canvas center (current zoom kept). Used e.g. to reveal a
+  // freshly created swimlane that landed off-screen at the bottom of a tall cluster.
+  const centerOn = useCallback(
+    (world: Point): void => {
+      const { zoom } = vpRef.current;
+      setViewport({ x: size.w / 2 - world.x * zoom, y: size.h / 2 - world.y * zoom, zoom });
+    },
+    [setViewport, size.w, size.h],
+  );
   useEffect(() => {
-    onZoomApi?.({ zoomIn, zoomOut, reset: resetView });
-  }, [onZoomApi, zoomIn, zoomOut, resetView]);
+    onZoomApi?.({ zoomIn, zoomOut, reset: resetView, centerOn });
+  }, [onZoomApi, zoomIn, zoomOut, resetView, centerOn]);
 
   // Responsive size: measures the container (unless a fixed size is imposed by the tests).
   useEffect(() => {

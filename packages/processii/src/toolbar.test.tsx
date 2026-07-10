@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest';
 import { createEngine } from './engine.js';
 import { Toolbar } from './toolbar.js';
+import { LEGACY_CLUSTER_ID } from './scene.js';
 
 describe('Toolbar — shapes + undo/redo', () => {
   it('adds a shape then undoes it via "Annuler"', () => {
@@ -96,6 +97,7 @@ describe('Toolbar — shapes + undo/redo', () => {
 describe('Toolbar — process board', () => {
   it('adds a step (step element)', () => {
     const engine = createEngine({ clientId: 1 });
+    engine.setBoardType('process'); // process-modelling tools are shown only for the process board
     const { getByRole } = render(<Toolbar engine={engine} />);
     fireEvent.click(getByRole('button', { name: 'Étape' }));
     expect(engine.listElements().some((e) => e.kind === 'step')).toBe(true);
@@ -103,13 +105,37 @@ describe('Toolbar — process board', () => {
 
   it('adds a swimlane', () => {
     const engine = createEngine({ clientId: 1 });
+    engine.setBoardType('process');
     const { getByRole } = render(<Toolbar engine={engine} />);
     fireEvent.click(getByRole('button', { name: 'Swimlane' }));
     expect(engine.listSwimlanes()).toHaveLength(1);
   });
 
+  it('hides the process-modelling tools on a non-process board (default ideation)', () => {
+    const engine = createEngine({ clientId: 1 }); // default boardType = ideation
+    const { queryByRole } = render(
+      <Toolbar engine={engine} onCreateSubprocess={() => Promise.resolve('c')} />,
+    );
+    // Step / sub-process / swimlane / group belong to the process board only → absent here.
+    for (const name of ['Étape', 'Sous-process', 'Swimlane', 'Groupe']) {
+      expect(queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+    // The generic drawing tools stay on every board type.
+    expect(queryByRole('button', { name: 'Rectangle' })).toBeInTheDocument();
+  });
+
+  it('reveals the process-modelling tools once the board type is process', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { queryByRole, rerender } = render(<Toolbar engine={engine} />);
+    expect(queryByRole('button', { name: 'Swimlane' })).not.toBeInTheDocument();
+    act(() => engine.setBoardType('process'));
+    rerender(<Toolbar engine={engine} />); // host re-renders on the shared onChange
+    expect(queryByRole('button', { name: 'Swimlane' })).toBeInTheDocument();
+  });
+
   it('groups the selected steps (enabled when the selection is non-empty)', () => {
     const engine = createEngine({ clientId: 1 });
+    engine.setBoardType('process');
     engine.addElement({ kind: 'step', id: 's1', x: 0, y: 0, width: 100, height: 60 });
     const { getByRole } = render(<Toolbar engine={engine} selectionCount={1} />);
     const groupBtn = getByRole('button', { name: 'Groupe' });
@@ -136,6 +162,7 @@ describe('Toolbar — spawn position (issue #13: create at the viewport center)'
 
   it('centers a step on a fractional center, rounding to integer world coords', () => {
     const engine = createEngine({ clientId: 1 });
+    engine.setBoardType('process');
     const { getByRole } = render(
       <Toolbar engine={engine} getSpawnCenter={() => ({ x: 10.4, y: -5.1 })} />,
     );
@@ -157,9 +184,50 @@ describe('Toolbar — spawn position (issue #13: create at the viewport center)'
 
   it('falls back to the fixed position when getSpawnCenter returns null (pre-measure)', () => {
     const engine = createEngine({ clientId: 1 });
+    engine.setBoardType('process');
     const { getByRole } = render(<Toolbar engine={engine} getSpawnCenter={() => null} />);
     fireEvent.click(getByRole('button', { name: 'Étape' }));
     expect(engine.listElements().find((e) => e.kind === 'step')).toMatchObject({ x: 80, y: 80 });
+  });
+});
+
+describe('Toolbar — swimlane smart placement (join the looked-at cluster vs. a fresh one)', () => {
+  it('creates a fresh cluster centered on the view when no cluster is on screen', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.setBoardType('process');
+    const onCenterView = vi.fn();
+    const { getByRole } = render(
+      <Toolbar
+        engine={engine}
+        getViewRect={() => ({ x: 1000, y: 500, width: 800, height: 600 })}
+        onCenterView={onCenterView}
+      />,
+    );
+    fireEvent.click(getByRole('button', { name: 'Swimlane' }));
+    const lane = engine.listSwimlanes()[0];
+    expect(lane?.clusterId).not.toBe(LEGACY_CLUSTER_ID); // a new block, not the origin one
+    // The lane band is centered on the view (center X = 1400); the view recentres onto it.
+    expect(onCenterView).toHaveBeenCalledWith({ x: 1400, y: expect.any(Number) });
+  });
+
+  it('appends to the cluster on screen instead of snapping to the first block', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.setBoardType('process');
+    engine.addSwimlane({ id: 'l1', order: 0, height: 100 }); // legacy block at origin
+    const { getByRole } = render(
+      <Toolbar engine={engine} getViewRect={() => ({ x: 0, y: 0, width: 800, height: 600 })} />,
+    );
+    fireEvent.click(getByRole('button', { name: 'Swimlane' }));
+    expect(engine.listSwimlanes()).toHaveLength(2);
+    expect(engine.listSwimlaneClusters()).toHaveLength(1); // both in the same, looked-at block
+  });
+
+  it('falls back to the legacy block when getViewRect is absent', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.setBoardType('process');
+    const { getByRole } = render(<Toolbar engine={engine} />);
+    fireEvent.click(getByRole('button', { name: 'Swimlane' }));
+    expect(engine.listSwimlanes()[0]?.clusterId).toBe(LEGACY_CLUSTER_ID);
   });
 });
 
@@ -182,6 +250,7 @@ describe('Toolbar — background color', () => {
 describe('Toolbar — sub-process', () => {
   it('the Sub-process button creates a child (callback) then adds a linked step', async () => {
     const engine = createEngine({ clientId: 1 });
+    engine.setBoardType('process');
     const onCreateSubprocess = vi.fn().mockResolvedValue('child-1');
     render(<Toolbar engine={engine} onCreateSubprocess={onCreateSubprocess} />);
     fireEvent.click(screen.getByRole('button', { name: 'Sous-process' }));
@@ -194,12 +263,15 @@ describe('Toolbar — sub-process', () => {
   });
 
   it('without onCreateSubprocess, no Sub-process button', () => {
-    render(<Toolbar engine={createEngine({ clientId: 1 })} />);
+    const engine = createEngine({ clientId: 1 });
+    engine.setBoardType('process'); // process tools shown, so the absence is due to the missing callback
+    render(<Toolbar engine={engine} />);
     expect(screen.queryByRole('button', { name: 'Sous-process' })).not.toBeInTheDocument();
   });
 
   it('callback resolving null → no step added', async () => {
     const engine = createEngine({ clientId: 1 });
+    engine.setBoardType('process');
     render(<Toolbar engine={engine} onCreateSubprocess={() => Promise.resolve(null)} />);
     fireEvent.click(screen.getByRole('button', { name: 'Sous-process' }));
     await Promise.resolve();

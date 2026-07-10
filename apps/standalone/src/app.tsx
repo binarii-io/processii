@@ -28,6 +28,8 @@ import {
   publishIdentity,
   readParticipants,
   viewportCenter,
+  visibleWorldRect,
+  type BoundingBox,
   type Participant,
   type Point,
   type PresenceParticipant,
@@ -103,6 +105,17 @@ export function App({ wiring, participant }: AppProps) {
       viewRef.current ? viewportCenter(viewRef.current.viewport, viewRef.current.size) : null,
     [],
   );
+  // World rectangle currently on screen — drives context-aware swimlane placement (join the
+  // looked-at cluster vs. a fresh centered one).
+  const getViewRect = useCallback(
+    (): BoundingBox | null =>
+      viewRef.current ? visibleWorldRect(viewRef.current.viewport, viewRef.current.size) : null,
+    [],
+  );
+  // Pans the canvas to reveal a newly created off-screen lane (via the canvas ZoomApi).
+  const centerView = useCallback((world: Point): void => {
+    zoomApiRef.current?.centerOn(world);
+  }, []);
   // Collapsible sidebar (macOS-style toggle, like the web app): open by default, the
   // open/close (width) animation is carried by `AppShell` via `sidebarCollapsed`.
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -540,6 +553,8 @@ export function App({ wiring, participant }: AppProps) {
                       onChange={forceRender}
                       selectionCount={space.active.engine.getSelection().length}
                       getSpawnCenter={getSpawnCenter}
+                      getViewRect={getViewRect}
+                      onCenterView={centerView}
                       onCreateSubprocess={createSubprocess}
                     />
                   </div>

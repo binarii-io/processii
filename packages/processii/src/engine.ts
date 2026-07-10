@@ -21,8 +21,10 @@ import type {
   Scene,
   Swimlane,
   SwimlaneCluster,
+  SwimlaneColor,
   WhiteboardElement,
 } from './scene.js';
+import { LEGACY_CLUSTER_ID } from './scene.js';
 import type { WhiteboardHistory } from './history.js';
 import { connectorGeometry } from './connector.js';
 
@@ -64,6 +66,13 @@ function stackBands(
     }
   }
   return out;
+}
+
+/** Area of the overlap of two axis-aligned world rects (0 when they do not intersect). */
+function intersectionArea(a: BoundingBox, b: BoundingBox): number {
+  const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? w * h : 0;
 }
 
 export class WhiteboardEngine {
@@ -300,6 +309,113 @@ export class WhiteboardEngine {
   /** Current clusters keyed by id (for local geometry simulation). */
   private clusterMap(): Map<string, SwimlaneCluster> {
     return new Map(this.listSwimlaneClusters().map((c) => [c.id, c]));
+  }
+
+  /**
+   * **Context-aware** swimlane creation. `visible` is the world rectangle currently on screen (from
+   * the canvas viewport — see `visibleWorldRect`). Placement is "smart":
+   * - if an existing cluster **overlaps the view**, the lane is appended at that cluster's bottom
+   *   (adopting its `x`/`width`) — the cluster with the largest visible area wins, deterministically;
+   * - otherwise (nothing on screen) a **fresh cluster** is created **centered on the view**, so the
+   *   lane appears in the middle of the screen instead of snapping back onto the first block far away;
+   * - when `visible` is unknown (host not wired / before the first canvas measure) the historical
+   *   behavior is preserved: the lane stacks onto the single {@link LEGACY_CLUSTER_ID} block.
+   *
+   * The new-cluster override (when made) and the lane are written in **one transaction**, so a peer
+   * never observes a lane pointing at a cluster whose override has not landed yet (same atomicity
+   * contract as attach/detach). Returns the created lane, its world `band` (so a host can recentre
+   * the view on it) and whether a new cluster was created.
+   */
+  addSwimlaneInView(
+    input: { id: string; name?: string; color?: SwimlaneColor; height?: number },
+    visible?: BoundingBox,
+  ): { lane: Swimlane; band: BoundingBox; createdCluster: boolean } {
+    const height = input.height ?? 160;
+    const plan = this.planSwimlanePlacement(input.id, height, visible);
+    let lane!: Swimlane;
+    this.board.transact(() => {
+      if (plan.newCluster) this.board.addSwimlaneCluster(plan.newCluster);
+      lane = this.board.addSwimlane({
+        id: input.id,
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.color !== undefined ? { color: input.color } : {}),
+        height,
+        clusterId: plan.clusterId,
+        order: plan.order,
+      });
+    });
+    return { lane, band: plan.band, createdCluster: plan.newCluster !== undefined };
+  }
+
+  /**
+   * Pure placement decision for {@link addSwimlaneInView} (no writes) — see that method for the
+   * rules. Factored out so the choice is unit-testable in isolation from the CRDT writes.
+   */
+  private planSwimlanePlacement(
+    laneId: string,
+    laneHeight: number,
+    visible: BoundingBox | undefined,
+  ): { clusterId: string; order: number; newCluster?: SwimlaneCluster; band: BoundingBox } {
+    const width = this.getSwimlanesWidth();
+    const lanes = this.listSwimlanes();
+    const laneCount = (clusterId: string): number =>
+      lanes.filter((l) => l.clusterId === clusterId).length;
+
+    // Cluster the user is looking at = the one whose bounds cover the most visible area. Ties break
+    // by leftmost then id, so concurrent local re-renders never disagree on the target.
+    let best: { cluster: SwimlaneCluster; bounds: BoundingBox; area: number } | undefined;
+    if (visible) {
+      for (const { cluster, bounds } of this.clusterBounds()) {
+        const area = intersectionArea(bounds, visible);
+        if (area <= 0) continue;
+        const better =
+          !best ||
+          area > best.area ||
+          (area === best.area &&
+            (cluster.x < best.cluster.x ||
+              (cluster.x === best.cluster.x && cluster.id < best.cluster.id)));
+        if (better) best = { cluster, bounds, area };
+      }
+    }
+
+    // Looking at a cluster → append at its bottom (orders stay contiguous 0..n-1 within a cluster).
+    if (best) {
+      return {
+        clusterId: best.cluster.id,
+        order: laneCount(best.cluster.id),
+        band: {
+          x: best.cluster.x,
+          y: best.bounds.y + best.bounds.height,
+          width: best.cluster.width,
+          height: laneHeight,
+        },
+      };
+    }
+
+    // Viewport unknown → keep the historical placement (stack onto the single legacy block).
+    if (!visible) {
+      const legacy = this.getSwimlaneCluster(LEGACY_CLUSTER_ID);
+      const legacyBounds = this.clusterBounds().find((c) => c.cluster.id === LEGACY_CLUSTER_ID);
+      const x = legacy?.x ?? 0;
+      const y = legacyBounds ? legacyBounds.bounds.y + legacyBounds.bounds.height : 0;
+      return {
+        clusterId: LEGACY_CLUSTER_ID,
+        order: laneCount(LEGACY_CLUSTER_ID),
+        band: { x, y, width: legacy?.width ?? width, height: laneHeight },
+      };
+    }
+
+    // Nothing on screen → a fresh cluster centered on the view. The id is injective in the lane
+    // (`cluster-of:<laneId>`, same convention as detach) so two peers never collide.
+    const x = Math.round(visible.x + visible.width / 2 - width / 2);
+    const y = Math.round(visible.y + visible.height / 2 - laneHeight / 2);
+    const newCluster: SwimlaneCluster = { id: `cluster-of:${laneId}`, x, y, width };
+    return {
+      clusterId: newCluster.id,
+      order: 0,
+      newCluster,
+      band: { x, y, width, height: laneHeight },
+    };
   }
 
   /**

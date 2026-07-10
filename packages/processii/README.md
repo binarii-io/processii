@@ -68,7 +68,11 @@ metadata without forking the schema (stored opaquely like `markers` ⇒ last-wri
 bag). At the **scene level**, **`boardType`** classifies the whole board (`process` | `architecture`
 | `ideation`, default `ideation`) — read/write it via `board.getBoardType()`/`setBoardType()`
 (shared in collab through the meta map, like the name/background). Both are **additive** (no
-`DOC_SCHEMA_VERSION` bump); phase 1 is a **label only** (the engine renders identically per type).
+`DOC_SCHEMA_VERSION` bump). `boardType` **gates the process-modelling toolbar tools** (step /
+sub-process / swimlane / group are exposed on the `process` board only; the generic drawing tools
+stay on every type); the renderer is otherwise identical per type. New boards default to `ideation`,
+so a host that wants the process tools up front should set `process` (via `BoardTypePicker` or
+`setBoardType`).
 
 ## Collaboration (Yjs)
 
@@ -146,9 +150,12 @@ The engine stores absolute **world** coordinates (what converges in collab and p
 **Zoom/pan** is on the contrary a **local presentation** state (like the selection): a pure
 `Viewport { x, y, zoom }`, outside the CRDT. `viewport.ts` provides the world↔screen transforms
 (`screenToWorld`, `worldToScreen`), the pan (`panBy`), the **cursor-anchored zoom** (`zoomAt`,
-saturated within `[MIN_ZOOM, MAX_ZOOM]`) and `viewportCenter(viewport, size)` — the world point at
+saturated within `[MIN_ZOOM, MAX_ZOOM]`), `viewportCenter(viewport, size)` — the world point at
 the **center of the visible canvas** (pure companion of `screenToWorld`), used to drop freshly
-created items where the user is looking rather than at a fixed world position. `renderToCanvas`
+created items where the user is looking rather than at a fixed world position — and
+`visibleWorldRect(viewport, size)`, the **whole visible region** in world coordinates (a
+`BoundingBox`), used to reason about _what the user is looking at_ (e.g. context-aware swimlane
+placement, see [Process board](#process-board-process-model)). `renderToCanvas`
 applies this viewport (`translate` + `scale`) and can draw a **marquee rectangle**; the UI
 indicators (selection, marquee) compensate for the zoom to stay ~1px on screen.
 
@@ -191,6 +198,17 @@ updateSwimlaneCluster/removeSwimlaneCluster`). The legacy shared `swimlanesWidth
   - `engine.attachSwimlane(id, targetClusterId, atIndex?)` merges a lane into another cluster,
     adopting its `x`/`width` and closing the gap it leaves.
   - `engine.reorderSwimlane(id, targetIndex)` reorders **within a cluster** (renumbers `order`).
+
+  **Context-aware creation.** `engine.addSwimlaneInView(input, visible?)` places a new lane by
+  what the user is **looking at**: given the visible world rect (`visible`, from
+  `visibleWorldRect` — see [Viewport](#viewport--hit-testing-interaction)), the lane is **appended
+  to the most-visible existing cluster** (largest intersection area; deterministic tie-break), or —
+  when no cluster is on screen — a **fresh cluster is created centered on the view** (id injective
+  in the lane, `cluster-of:<laneId>`) so it appears in the middle of the screen instead of snapping
+  back onto the first block. With no `visible` (host not wired / before the first canvas measure) it
+  falls back to the historical legacy-block placement. The cluster override (when a new block is
+  made) and the lane are written in **one transaction** (atomic for peers, one undo step). Returns
+  the lane, its world `band` and `createdCluster`, so a host can recentre the view on the new lane.
 
   All four **carry each lane's content by geometry** — any non-connector element whose **center**
   falls inside a lane's band follows it (not only steps "attached" via `swimlaneId`: a card dropped
@@ -347,12 +365,20 @@ function Surface({ doc, awareness, collaborator }) {
   (rectangle/ellipse/text/sticky/step/sub-process) are then created **centered on what the user is
   looking at**, whatever the pan/zoom, instead of a fixed off-screen corner. Both props are
   optional: a `Toolbar` used standalone (no `getSpawnCenter`, or before the first canvas measure)
-  falls back to the historical fixed positions. Swimlanes (positioned by their cluster), groups
-  (metadata) and connectors (geometry-derived) are unaffected.
+  falls back to the historical fixed positions. Groups (metadata) and connectors (geometry-derived)
+  are unaffected.
+- **Swimlanes are placed context-aware.** The `Toolbar` also takes `getViewRect(): BoundingBox |
+null` (the visible world rect, from `visibleWorldRect`) and `onCenterView(world)`. Creating a
+  swimlane calls `engine.addSwimlaneInView` (see [Process board](#process-board-process-model)): the
+  lane joins the cluster on screen or starts a fresh one centered on the view, then the view
+  **recentres onto the new lane** via `onCenterView` — wired to `BoardCanvas`'s
+  **`ZoomApi.centerOn(world)`** (pan-only, keeps the zoom). Both props are optional; without them
+  the lane falls back to the legacy-block placement and the view does not move.
   > **Hosts composing the primitives directly** (their own layout instead of `WhiteboardEditor`,
   > like the standalone app) must wire this themselves: forward `BoardCanvas`'s `onViewportChange`
-  > into a ref and hand a `getSpawnCenter` derived via `viewportCenter(viewport, size)` to the
-  > `Toolbar` — otherwise shapes silently fall back to the fixed positions.
+  > into a ref and hand `getSpawnCenter`/`getViewRect` (via `viewportCenter`/`visibleWorldRect`) plus
+  > `onCenterView` (via `ZoomApi.centerOn`, captured from `onZoomApi`) to the `Toolbar` — otherwise
+  > shapes/lanes silently fall back to the fixed/legacy positions.
 - Primitives also exported individually (`BoardCanvas`, `Toolbar`, `StylePanel`, `SidePanel`,
   `PresenceAvatars`, **`BoardTypePicker`**, **`ZoomControl`**) + awareness presence helpers
   (`publishCursor`, `publishSelection`, `publishIdentity`, `observePresence`, `readRemoteCursors`,
@@ -360,11 +386,13 @@ function Surface({ doc, awareness, collaborator }) {
   layout (what the standalone does).
   - **`BoardTypePicker`** — self-contained board-type selector (process/architecture/idéation): it
     tracks the engine (reflects collab/undo via `board.observe`) and writes via `setBoardType`. Drop
-    it anywhere in the host chrome (e.g. a floating bottom bar).
+    it anywhere in the host chrome (e.g. a floating bottom bar). The chosen type **gates the
+    process-modelling toolbar tools** (see [Scene model](#scene-model)).
   - **`ZoomControl`** — presentational − / % / + pill. `BoardCanvas` renders one itself **unless
     `hideZoomControl`** is set; a host that wants the zoom in its own layout sets `hideZoomControl`
     and drives an external `ZoomControl` via the actions `BoardCanvas` surfaces through
-    **`onZoomApi({ zoomIn, zoomOut, reset })`** (the live `%` comes from `onViewportChange`).
+    **`onZoomApi({ zoomIn, zoomOut, reset, centerOn })`** (the live `%` comes from
+    `onViewportChange`; `centerOn(world)` pans to a world point, keeping the zoom).
 
 > **Peer cursors**: rendered as a **colored arrow** (multiplayer style, tip on the exact
 > position) + name label, each in **their own color**. The presence color accepts a **semantic
@@ -453,6 +481,7 @@ import {
   screenToWorld,
   worldToScreen,
   viewportCenter,
+  visibleWorldRect,
   panBy,
   zoomAt, // viewport (zoom/pan)
   hitTest,

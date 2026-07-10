@@ -8,6 +8,7 @@ import {
   screenToWorld,
   setZoom,
   viewportCenter,
+  visibleWorldRect,
   worldToScreen,
   zoomAt,
   type Viewport,
@@ -47,6 +48,29 @@ describe('viewport — center of the visible canvas', () => {
     expect(viewportCenter(vp, size)).toEqual(screenToWorld(vp, { x: 400, y: 300 }));
     // A shape centered here lands under the screen center once transformed back.
     expect(worldToScreen(vp, viewportCenter(vp, size))).toEqual({ x: 400, y: 300 });
+  });
+});
+
+describe('viewport — visible world rectangle', () => {
+  it('identity: the visible rect is the whole canvas in world units', () => {
+    expect(visibleWorldRect(IDENTITY_VIEWPORT, { width: 800, height: 600 })).toEqual({
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+  });
+
+  it('follows pan/zoom: top-left = screenToWorld(0,0), extents divided by the zoom', () => {
+    const vp: Viewport = { x: 100, y: 50, zoom: 2 };
+    const size = { width: 800, height: 600 };
+    const rect = visibleWorldRect(vp, size);
+    expect(rect).toEqual({ x: -50, y: -25, width: 400, height: 300 });
+    // Top-left is the world point under the screen origin; its center matches viewportCenter.
+    expect({ x: rect.x, y: rect.y }).toEqual(screenToWorld(vp, { x: 0, y: 0 }));
+    expect({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }).toEqual(
+      viewportCenter(vp, size),
+    );
   });
 });
 

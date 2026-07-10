@@ -295,3 +295,105 @@ describe('swimlane clusters — overlapping clusters', () => {
     expect(engine.board.getElement('s')).toMatchObject({ x: 550, y: 50 });
   });
 });
+
+describe('swimlane clusters — context-aware creation (addSwimlaneInView)', () => {
+  it('on an empty board, a fresh cluster is created centered on the view', () => {
+    const engine = createEngine({ clientId: 1 });
+    // The user is looking at the world rect (1000,500)-(1800,1100) (e.g. panned far from origin).
+    const { lane, band, createdCluster } = engine.addSwimlaneInView(
+      { id: 'l1', name: 'Bande', height: 180 },
+      { x: 1000, y: 500, width: 800, height: 600 },
+    );
+    expect(createdCluster).toBe(true);
+    expect(lane.clusterId).toBe('cluster-of:l1');
+    // Cluster (default width 2000) centered on the view center (1400, 800):
+    // x = round(1400 - 1000) = 400 ; y = round(800 - 90) = 710.
+    const cluster = engine.getSwimlaneCluster('cluster-of:l1');
+    expect(cluster).toMatchObject({ x: 400, y: 710, width: DEFAULT_SWIMLANES_WIDTH });
+    // The band is centered on the view horizontally (its center = the view center X).
+    expect(band).toEqual({ x: 400, y: 710, width: DEFAULT_SWIMLANES_WIDTH, height: 180 });
+    expect(band.x + band.width / 2).toBe(1400);
+  });
+
+  it('appends to the cluster the user is looking at (view overlaps its bounds)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addSwimlane({ id: 'l1', order: 0, height: 100 }); // legacy cluster at (0,0), width 2000
+    const { lane, band, createdCluster } = engine.addSwimlaneInView(
+      { id: 'l2', height: 120 },
+      { x: 0, y: 0, width: 800, height: 600 }, // overlaps the legacy band
+    );
+    expect(createdCluster).toBe(false);
+    expect(lane.clusterId).toBe(LEGACY_CLUSTER_ID);
+    expect(lane.order).toBe(1); // appended at the bottom
+    expect(band).toEqual({ x: 0, y: 100, width: DEFAULT_SWIMLANES_WIDTH, height: 120 });
+    expect(engine.listSwimlaneClusters()).toHaveLength(1); // still one block
+  });
+
+  it('when panned away from every cluster, a new block is created (no snap-back)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addSwimlane({ id: 'l1', order: 0, height: 100 }); // legacy block spans x:[0,2000], y:[0,100]
+    const { lane, createdCluster } = engine.addSwimlaneInView(
+      { id: 'l2', height: 120 },
+      { x: 5000, y: 5000, width: 800, height: 600 }, // no overlap with the legacy block
+    );
+    expect(createdCluster).toBe(true);
+    expect(lane.clusterId).toBe('cluster-of:l2');
+    expect(lane.clusterId).not.toBe(LEGACY_CLUSTER_ID);
+    expect(engine.listSwimlaneClusters()).toHaveLength(2); // two independent blocks
+  });
+
+  it('ties on visible area break by the leftmost cluster (deterministic)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addSwimlane({ id: 'a1', clusterId: 'A', order: 0, height: 100 });
+    engine.addSwimlaneCluster({ id: 'A', x: 0, y: 0, width: 2000 }); // spans x:[0,2000]
+    engine.addSwimlane({ id: 'b1', clusterId: 'B', order: 0, height: 100 });
+    engine.addSwimlaneCluster({ id: 'B', x: 3000, y: 0, width: 2000 }); // spans x:[3000,5000]
+    // View x:[1500,3500] overlaps A by 500 (1500..2000) and B by 500 (3000..3500) → tie → leftmost A.
+    const { lane } = engine.addSwimlaneInView(
+      { id: 'c1', height: 100 },
+      { x: 1500, y: 0, width: 2000, height: 100 },
+    );
+    expect(lane.clusterId).toBe('A');
+  });
+
+  it('picks the MOST visible cluster when several overlap the view', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addSwimlane({ id: 'a1', clusterId: 'A', order: 0, height: 100 });
+    engine.addSwimlaneCluster({ id: 'A', x: 0, y: 0, width: 2000 }); // spans x:[0,2000]
+    engine.addSwimlane({ id: 'b1', clusterId: 'B', order: 0, height: 100 });
+    engine.addSwimlaneCluster({ id: 'B', x: 3000, y: 0, width: 2000 }); // spans x:[3000,5000]
+    // View x:[1600,3600] overlaps A by 400 (x:1600..2000) and B by 600 (x:3000..3600) → B wins.
+    const { lane } = engine.addSwimlaneInView(
+      { id: 'c1', height: 100 },
+      { x: 1600, y: 0, width: 2000, height: 100 },
+    );
+    expect(lane.clusterId).toBe('B');
+    expect(lane.order).toBe(1);
+  });
+
+  it('without a viewport, preserves the historical placement (legacy block)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addSwimlane({ id: 'l1', order: 0, height: 100 });
+    const { lane, createdCluster } = engine.addSwimlaneInView({ id: 'l2', height: 120 });
+    expect(createdCluster).toBe(false);
+    expect(lane.clusterId).toBe(LEGACY_CLUSTER_ID);
+    expect(lane.order).toBe(1);
+  });
+
+  it('writes the new cluster override and the lane atomically (one update, single undo step)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const history = engine.history();
+    let updates = 0;
+    engine.board.doc.on('update', () => (updates += 1));
+    engine.addSwimlaneInView({ id: 'l1', height: 180 }, { x: 0, y: 0, width: 800, height: 600 });
+    // Cluster override + lane emit ONE CRDT update (nested transactions flatten) → peers never see
+    // a lane pointing at a cluster whose override has not landed.
+    expect(updates).toBe(1);
+    expect(engine.listSwimlanes()).toHaveLength(1);
+    expect(engine.listSwimlaneClusters()).toHaveLength(1);
+    // One undo removes BOTH the lane and its cluster override (they are one transaction).
+    history.undo();
+    expect(engine.listSwimlanes()).toHaveLength(0);
+    expect(engine.listSwimlaneClusters()).toHaveLength(0);
+  });
+});
