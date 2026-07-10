@@ -207,7 +207,27 @@ export {
 } from './editor.js';
 export { BoardCanvas, type BoardCanvasProps, type ZoomApi } from './board-canvas.js';
 export { Toolbar, type ToolbarProps } from './toolbar.js';
-export { BoardTypePicker, type BoardTypePickerProps } from './board-type-picker.js';
+export {
+  BoardTypePicker,
+  BOARD_TYPE_META,
+  type BoardTypePickerProps,
+} from './board-type-picker.js';
+
+// --- Headless chrome (composable/headless whiteboard UI, ADR: 0.6.0) ---
+// The LOGIC of the whiteboard chrome (tools, background) as hooks with ZERO styling, so any host can
+// render its own toolbar/pickers without forking or overriding CSS. The styled components above
+// (`Toolbar`, `BoardTypePicker`) consume these same hooks — one source of truth.
+export {
+  useWhiteboardTools,
+  type WhiteboardTool,
+  type UseWhiteboardToolsOptions,
+} from './use-whiteboard-tools.js';
+export {
+  useBoardBackground,
+  BOARD_BACKGROUNDS,
+  type BoardBackgroundOption,
+  type UseBoardBackground,
+} from './use-board-background.js';
 export { ZoomControl, type ZoomControlProps } from './zoom-control.js';
 export { StylePanel, type StylePanelProps } from './style-panel.js';
 export { SidePanel, type SidePanelProps } from './side-panel.js';
