@@ -216,6 +216,24 @@ describe('agent-ops', () => {
     expect(scene.swimlanes[0]).toMatchObject({ id, name: 'Customer' });
   });
 
+  it('update_swimlane applies a combined lane+width patch in ONE Yjs transaction', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_swimlane').run(engine, { name: 'Customer', color: 'blue' }) as {
+      id: string;
+    };
+    // The lane patch and the cluster width are the op's two internal writes: freeze the
+    // one-transaction contract (a peer must never observe one without the other).
+    let transactions = 0;
+    engine.board.doc.on('afterTransaction', () => {
+      transactions += 1;
+    });
+    op('update_swimlane').run(engine, { id, name: 'Support', width: 900 });
+    expect(transactions).toBe(1);
+    const scene = op('read_board').run(engine, {}) as Scene;
+    expect(scene.swimlanes[0]).toMatchObject({ id, name: 'Support', color: 'blue' });
+    expect(scene.swimlaneClusters[0]).toMatchObject({ width: 900 });
+  });
+
   it('update_swimlane rejects a width below the canvas handle lower bound (200)', () => {
     const engine = createEngine({ clientId: 1 });
     const { id } = op('add_swimlane').run(engine, {}) as { id: string };
