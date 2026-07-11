@@ -179,6 +179,74 @@ describe('agent-ops', () => {
     expect(op('read_board').run(engine, {}) as Scene).toMatchObject({ swimlanes: [] });
   });
 
+  it('update_swimlane patches only the provided fields (name/type/color/height)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_swimlane').run(engine, {
+      name: 'Customer',
+      laneType: 'user',
+      color: 'blue',
+    }) as { id: string };
+    const res = op('update_swimlane').run(engine, {
+      id,
+      name: 'Support',
+      color: 'green',
+      height: 220,
+    }) as { id: string };
+    expect(res.id).toBe(id);
+    const scene = op('read_board').run(engine, {}) as Scene;
+    expect(scene.swimlanes[0]).toMatchObject({
+      id,
+      name: 'Support',
+      laneType: 'user', // untouched
+      color: 'green',
+      height: 220,
+    });
+  });
+
+  it('update_swimlane switches to a custom category with its free label', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_swimlane').run(engine, { laneType: 'system' }) as { id: string };
+    op('update_swimlane').run(engine, { id, laneType: 'custom', customType: 'Partner' });
+    const scene = op('read_board').run(engine, {}) as Scene;
+    expect(scene.swimlanes[0]).toMatchObject({ laneType: 'custom', customType: 'Partner' });
+  });
+
+  it('update_swimlane throws AgentOpError on unknown id, empty patch and invalid values', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_swimlane').run(engine, {}) as { id: string };
+    expect(() => op('update_swimlane').run(engine, { id: 'ghost', name: 'x' })).toThrow(
+      AgentOpError,
+    );
+    // An id-only call would be a silent no-op: surfaced as a typed error instead.
+    expect(() => op('update_swimlane').run(engine, { id })).toThrow(AgentOpError);
+    // Enum and bounds are enforced at the input boundary (before touching the board).
+    expect(() => op('update_swimlane').run(engine, { id, color: 'chartreuse' })).toThrow(
+      AgentOpError,
+    );
+    expect(() => op('update_swimlane').run(engine, { id, height: -10 })).toThrow(AgentOpError);
+  });
+
+  it('delete_swimlane removes the lane but keeps its steps', () => {
+    const engine = createEngine({ clientId: 1 });
+    const lane = op('add_swimlane').run(engine, { name: 'Customer' }) as { id: string };
+    const step = op('add_step').run(engine, {
+      name: 'A',
+      x: 0,
+      y: 0,
+      swimlaneId: lane.id,
+    }) as { id: string };
+    const res = op('delete_swimlane').run(engine, { id: lane.id }) as { id: string };
+    expect(res.id).toBe(lane.id);
+    const scene = op('read_board').run(engine, {}) as Scene;
+    expect(scene.swimlanes).toEqual([]);
+    expect(scene.elements.map((e) => e.id)).toContain(step.id);
+  });
+
+  it('delete_swimlane throws AgentOpError on an unknown id', () => {
+    const engine = createEngine({ clientId: 1 });
+    expect(() => op('delete_swimlane').run(engine, { id: 'ghost' })).toThrow(AgentOpError);
+  });
+
   it('add_group creates a named group over steps, returns its id, visible via read_board', () => {
     const engine = createEngine({ clientId: 1 });
     const a = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
@@ -290,7 +358,7 @@ describe('agent-ops', () => {
     expect(() => op('delete_element').run(engine, { id: 'ghost' })).toThrow(AgentOpError);
   });
 
-  it('exposes all ten ops resolvable by name', () => {
+  it('exposes all twelve ops resolvable by name', () => {
     const names = AGENT_OPS.map((o) => o.name);
     expect(names).toEqual([
       'read_board',
@@ -299,6 +367,8 @@ describe('agent-ops', () => {
       'set_board_type',
       'add_element',
       'add_swimlane',
+      'update_swimlane',
+      'delete_swimlane',
       'add_group',
       'move_element',
       'update_element',

@@ -12,7 +12,8 @@
  * Reuses the exported domain schema (`BOARD_TYPES`, `SWIMLANE_COLORS`, the engine's validated
  * writes) — it never redeclares element shapes. Catalog: reads (`read_board`), a process-oriented
  * layer (`add_step`, `connect`, `set_board_type`) and a full element CRUD (`add_element`,
- * `add_swimlane`, `add_group`, `move_element`, `update_element`, `delete_element`).
+ * `add_swimlane`, `update_swimlane`, `delete_swimlane`, `add_group`, `move_element`,
+ * `update_element`, `delete_element`).
  */
 import { z } from 'zod';
 import type { WhiteboardEngine } from './engine.js';
@@ -240,6 +241,63 @@ const addSwimlane = defineOp({
   },
 });
 
+const updateSwimlane = defineOp({
+  name: 'update_swimlane',
+  description:
+    'Update fields of an existing swimlane: its name, category (`laneType`, with `customType` as ' +
+    'the free label when "custom"), semantic color or height. Only the provided fields change — ' +
+    'the same edits as the interactive properties panel. Returns the lane id.',
+  inputSchema: z
+    .object({
+      id: z.string().min(1).describe('Id of the swimlane to update (see `read_board`).'),
+      name: z.string().optional().describe('New lane label.'),
+      laneType: z
+        .enum(['user', 'system', 'custom'])
+        .optional()
+        .describe('New lane category: actor (user), system or free (custom).'),
+      customType: z
+        .string()
+        .optional()
+        .describe('Free category label, shown when `laneType` is "custom".'),
+      color: z.enum(SWIMLANE_COLORS).optional().describe('New semantic lane color.'),
+      height: z.number().finite().positive().optional().describe('New lane height (world units).'),
+    })
+    .describe('The id plus at least one field to change.'),
+  execute: (engine, input): { id: string } => {
+    // Build the patch with only the provided fields (respect exactOptionalPropertyTypes).
+    const patch: Parameters<WhiteboardEngine['updateSwimlane']>[1] = {};
+    if (input.name !== undefined) patch.name = input.name;
+    if (input.laneType !== undefined) patch.laneType = input.laneType;
+    if (input.customType !== undefined) patch.customType = input.customType;
+    if (input.color !== undefined) patch.color = input.color;
+    if (input.height !== undefined) patch.height = input.height;
+    // An empty patch would "succeed" without changing anything — surface it to the model instead.
+    if (Object.keys(patch).length === 0) {
+      throw new AgentOpError('update_swimlane requires at least one field to change besides `id`.');
+    }
+    if (!engine.updateSwimlane(input.id, patch)) {
+      throw new AgentOpError(`Swimlane "${input.id}" not found.`);
+    }
+    return { id: input.id };
+  },
+});
+
+const deleteSwimlane = defineOp({
+  name: 'delete_swimlane',
+  description:
+    'Delete an existing swimlane by id. Steps are NOT deleted with the lane (they keep their ' +
+    'position on the board). Use `read_board` to obtain the id first. Returns the deleted lane id.',
+  inputSchema: z.object({
+    id: z.string().min(1).describe('Id of the swimlane to delete.'),
+  }),
+  execute: (engine, input): { id: string } => {
+    if (!engine.removeSwimlane(input.id)) {
+      throw new AgentOpError(`Swimlane "${input.id}" not found.`);
+    }
+    return { id: input.id };
+  },
+});
+
 const addGroup = defineOp({
   name: 'add_group',
   description:
@@ -345,6 +403,8 @@ export const AGENT_OPS: readonly AgentOp[] = [
   setBoardType,
   addElement,
   addSwimlane,
+  updateSwimlane,
+  deleteSwimlane,
   addGroup,
   moveElement,
   updateElement,
