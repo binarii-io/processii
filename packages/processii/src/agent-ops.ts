@@ -245,8 +245,10 @@ const updateSwimlane = defineOp({
   name: 'update_swimlane',
   description:
     'Update fields of an existing swimlane: its name, category (`laneType`, with `customType` as ' +
-    'the free label when "custom"), semantic color or height. Only the provided fields change — ' +
-    'the same edits as the interactive properties panel. Returns the lane id.',
+    'the free label when "custom"), semantic color, height or width. Only the provided fields ' +
+    'change — the same edits as the interactive panel and canvas handles. Note: lanes of a block ' +
+    'share their width (a cluster property), so `width` widens every aligned lane. Returns the ' +
+    'lane id.',
   inputSchema: z
     .object({
       id: z.string().min(1).describe('Id of the swimlane to update (see `read_board`).'),
@@ -267,10 +269,18 @@ const updateSwimlane = defineOp({
         .min(60)
         .optional()
         .describe('New lane height (world units, minimum 60).'),
+      // Same lower bound as the canvas width-resize handle (`Math.max(200, …)`). Width lives on
+      // the lane's CLUSTER (shared by every aligned lane) — resolved from the lane id below.
+      width: z
+        .number()
+        .finite()
+        .min(200)
+        .optional()
+        .describe('New width of the lane block (world units, minimum 200, shared by its lanes).'),
     })
     .describe('The id plus at least one field to change.'),
   execute: (engine, input): { id: string } => {
-    // Build the patch with only the provided fields (respect exactOptionalPropertyTypes).
+    // Build the lane-level patch with only the provided fields (respect exactOptionalPropertyTypes).
     const patch: Parameters<WhiteboardEngine['updateSwimlane']>[1] = {};
     if (input.name !== undefined) patch.name = input.name;
     if (input.laneType !== undefined) patch.laneType = input.laneType;
@@ -278,12 +288,26 @@ const updateSwimlane = defineOp({
     if (input.color !== undefined) patch.color = input.color;
     if (input.height !== undefined) patch.height = input.height;
     // An empty patch would "succeed" without changing anything — surface it to the model instead.
-    if (Object.keys(patch).length === 0) {
+    if (Object.keys(patch).length === 0 && input.width === undefined) {
       throw new AgentOpError('update_swimlane requires at least one field to change besides `id`.');
     }
-    if (!engine.updateSwimlane(input.id, patch)) {
+    // `width` is a property of the lane's cluster (shared by every aligned lane): resolve it from
+    // the lane. Resolving also covers the width-only call, where `updateSwimlane` is skipped.
+    const lane = engine.listSwimlanes().find((l) => l.id === input.id);
+    if (!lane) {
       throw new AgentOpError(`Swimlane "${input.id}" not found.`);
     }
+    // One transaction for the lane patch + the cluster width: a peer must never observe one
+    // without the other (same atomicity contract as the engine's own multi-write commits).
+    engine.board.transact(() => {
+      if (Object.keys(patch).length > 0) engine.updateSwimlane(input.id, patch);
+      if (input.width !== undefined) {
+        engine.updateSwimlaneCluster(lane.clusterId, { width: input.width });
+      }
+      // A geometry change (height reflows the lanes below, width moves the right edge) must
+      // re-route bound connectors — the canvas handles do the same after a drag (cf. 0.8.1).
+      if (input.height !== undefined || input.width !== undefined) engine.refreshConnectors();
+    });
     return { id: input.id };
   },
 });

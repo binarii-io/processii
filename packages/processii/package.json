@@ -1,6 +1,6 @@
 {
   "name": "@binarii/processii",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "CRDT-backed process whiteboard engine and React editing surface — Yjs board, Canvas 2D renderer, pluggable transport/persistence, Excalidraw/draw.io interop.",
   "license": "Apache-2.0",
   "repository": {
