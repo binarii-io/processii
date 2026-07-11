@@ -260,7 +260,13 @@ const updateSwimlane = defineOp({
         .optional()
         .describe('Free category label, shown when `laneType` is "custom".'),
       color: z.enum(SWIMLANE_COLORS).optional().describe('New semantic lane color.'),
-      height: z.number().finite().positive().optional().describe('New lane height (world units).'),
+      // Same lower bound as the interactive panel (side-panel `min={60}` + `h >= 60` guard).
+      height: z
+        .number()
+        .finite()
+        .min(60)
+        .optional()
+        .describe('New lane height (world units, minimum 60).'),
     })
     .describe('The id plus at least one field to change.'),
   execute: (engine, input): { id: string } => {

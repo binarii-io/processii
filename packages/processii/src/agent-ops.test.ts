@@ -224,6 +224,8 @@ describe('agent-ops', () => {
       AgentOpError,
     );
     expect(() => op('update_swimlane').run(engine, { id, height: -10 })).toThrow(AgentOpError);
+    // Below the panel's lower bound (min 60) — rejected like the interactive input would.
+    expect(() => op('update_swimlane').run(engine, { id, height: 30 })).toThrow(AgentOpError);
   });
 
   it('delete_swimlane removes the lane but keeps its steps', () => {
