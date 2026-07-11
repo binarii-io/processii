@@ -203,6 +203,29 @@ describe('agent-ops', () => {
     });
   });
 
+  it('update_swimlane resizes the lane block width via its cluster (width-only call allowed)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_swimlane').run(engine, { name: 'Customer' }) as { id: string };
+    // Width lives on the lane's cluster (shared by aligned lanes); a width-only patch is valid.
+    const res = op('update_swimlane').run(engine, { id, width: 800 }) as { id: string };
+    expect(res.id).toBe(id);
+    const scene = op('read_board').run(engine, {}) as Scene;
+    expect(scene.swimlaneClusters).toHaveLength(1);
+    expect(scene.swimlaneClusters[0]).toMatchObject({ width: 800 });
+    // The lane itself is untouched (name intact, no width field on a lane).
+    expect(scene.swimlanes[0]).toMatchObject({ id, name: 'Customer' });
+  });
+
+  it('update_swimlane rejects a width below the canvas handle lower bound (200)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_swimlane').run(engine, {}) as { id: string };
+    expect(() => op('update_swimlane').run(engine, { id, width: 150 })).toThrow(AgentOpError);
+    // And a width on an unknown lane is a not-found, not a silent no-op.
+    expect(() => op('update_swimlane').run(engine, { id: 'lane:ghost', width: 800 })).toThrow(
+      AgentOpError,
+    );
+  });
+
   it('update_swimlane switches to a custom category with its free label', () => {
     const engine = createEngine({ clientId: 1 });
     const { id } = op('add_swimlane').run(engine, { laneType: 'system' }) as { id: string };

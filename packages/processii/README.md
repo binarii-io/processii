@@ -538,20 +538,20 @@ getAgentOp('read_board')?.run(engine, {}); // → lossless Scene snapshot
 
 **Catalog** (twelve ops):
 
-| Op                | Input                                                                             | Returns                                                                       |
-| ----------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `read_board`      | `{}`                                                                              | lossless `Scene` snapshot (board type + every element/lane/group with its id) |
-| `add_step`        | `{ name, x, y, width?, height?, description?, swimlaneId?, id? }`                 | `{ id }` (process node)                                                       |
-| `connect`         | `{ from, to, id? }`                                                               | `{ id }` (bound directed arrow)                                               |
-| `set_board_type`  | `{ boardType: 'process' \| 'architecture' \| 'ideation' }`                        | `{ boardType }`                                                               |
-| `add_element`     | `{ kind: 'rectangle' \| 'ellipse' \| 'text', x, y, width?, height?, text?, id? }` | `{ id }` (free shape)                                                         |
-| `add_swimlane`    | `{ name?, laneType?: 'user' \| 'system' \| 'custom', color?, id? }`               | `{ id }` (lane)                                                               |
-| `update_swimlane` | `{ id, name?, laneType?, customType?, color?, height? }`                          | `{ id }` (patch of the provided fields — same edits as the properties panel)  |
-| `delete_swimlane` | `{ id }`                                                                          | `{ id }` (steps are NOT deleted with the lane)                                |
-| `add_group`       | `{ name?, stepIds?: string[], id? }`                                              | `{ id }` (named step group)                                                   |
-| `move_element`    | `{ id, dx, dy }`                                                                  | `{ id }` (relative move)                                                      |
-| `update_element`  | `{ id, text?, x?, y?, width?, height?, fill?, stroke? }`                          | `{ id }` (patch of the provided fields)                                       |
-| `delete_element`  | `{ id }`                                                                          | `{ id }`                                                                      |
+| Op                | Input                                                                             | Returns                                                                                                                  |
+| ----------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `read_board`      | `{}`                                                                              | lossless `Scene` snapshot (board type + every element/lane/group with its id)                                            |
+| `add_step`        | `{ name, x, y, width?, height?, description?, swimlaneId?, id? }`                 | `{ id }` (process node)                                                                                                  |
+| `connect`         | `{ from, to, id? }`                                                               | `{ id }` (bound directed arrow)                                                                                          |
+| `set_board_type`  | `{ boardType: 'process' \| 'architecture' \| 'ideation' }`                        | `{ boardType }`                                                                                                          |
+| `add_element`     | `{ kind: 'rectangle' \| 'ellipse' \| 'text', x, y, width?, height?, text?, id? }` | `{ id }` (free shape)                                                                                                    |
+| `add_swimlane`    | `{ name?, laneType?: 'user' \| 'system' \| 'custom', color?, id? }`               | `{ id }` (lane)                                                                                                          |
+| `update_swimlane` | `{ id, name?, laneType?, customType?, color?, height?, width? }`                  | `{ id }` (patch of the provided fields — panel + canvas-handle edits; `width` is the lane block's shared width, min 200) |
+| `delete_swimlane` | `{ id }`                                                                          | `{ id }` (steps are NOT deleted with the lane)                                                                           |
+| `add_group`       | `{ name?, stepIds?: string[], id? }`                                              | `{ id }` (named step group)                                                                                              |
+| `move_element`    | `{ id, dx, dy }`                                                                  | `{ id }` (relative move)                                                                                                 |
+| `update_element`  | `{ id, text?, x?, y?, width?, height?, fill?, stroke? }`                          | `{ id }` (patch of the provided fields)                                                                                  |
+| `delete_element`  | `{ id }`                                                                          | `{ id }`                                                                                                                 |
 
 `add_*` accept an optional explicit `id` (else one is generated) for deterministic host/test output.
 `move_element`/`update_element`/`delete_element` — and their swimlane counterparts — throw
