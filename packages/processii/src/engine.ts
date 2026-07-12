@@ -100,17 +100,19 @@ function cloneElement(el: WhiteboardElement): WhiteboardElement {
 
 /**
  * Rebuilds a copied element for pasting: assigns its **fresh id** (from `idMap`), applies the
- * `(dx, dy)` block offset, remaps connector endpoints within the copied set (dropping bindings to
- * elements that were not copied), and clears the board-scoped links a copy must not carry
- * (`swimlaneId`, `subprocessRef`/`subprocessKind`). Returns a new element (never mutates `el`).
+ * `(dx, dy)` block offset and the front **`z`** (so the copies land on top), remaps connector
+ * endpoints within the copied set (dropping bindings to elements that were not copied), and clears
+ * the board-scoped links a copy must not carry (`swimlaneId`, `subprocessRef`/`subprocessKind`).
+ * Returns a new element (never mutates `el`).
  */
 function pasteElement(
   el: WhiteboardElement,
   idMap: ReadonlyMap<string, string>,
   dx: number,
   dy: number,
+  z: number,
 ): WhiteboardElement {
-  const next = { ...el, id: idMap.get(el.id)!, x: el.x + dx, y: el.y + dy };
+  const next = { ...el, id: idMap.get(el.id)!, x: el.x + dx, y: el.y + dy, z };
   if (next.kind === 'line' || next.kind === 'arrow') {
     // Keep a binding only when its target was copied too; otherwise the connector becomes a free
     // (unbound) line at the offset position rather than pointing at an unrelated element.
@@ -260,7 +262,8 @@ export class WhiteboardEngine {
    * The whole block is offset: onto `at` (its bounding-box **center** lands there — e.g. the
    * viewport center for `Ctrl+V`) or by a fixed diagonal **nudge** (in-place duplicate, `Ctrl+D`).
    * Because every element shifts by the same delta, bound connectors stay visually attached without
-   * a re-route. All inserts run in a **single transaction** (one undo step). Selects the pasted
+   * a re-route. The copies land **on top** (`z` above every existing element, their relative order
+   * preserved). All inserts run in a **single transaction** (one undo step). Selects the pasted
    * elements and returns their new ids in paste order.
    */
   paste(payload: ClipboardPayload, options: { at?: Point } = {}): string[] {
@@ -274,14 +277,66 @@ export class WhiteboardEngine {
     const at = options.at;
     const dx = at && box ? at.x - (box.x + box.width / 2) : PASTE_NUDGE;
     const dy = at && box ? at.y - (box.y + box.height / 2) : PASTE_NUDGE;
+    // Copies go to the front. `src` is z-ascending (from `copySelection`) → adding `i` keeps their
+    // relative stacking above the current top.
+    const existing = this.listElements();
+    const topZ = existing.length ? Math.max(...existing.map((e) => e.z)) : 0;
     const newIds: string[] = [];
     this.board.transact(() => {
-      for (const el of src) {
-        newIds.push(this.board.addElement(pasteElement(el, idMap, dx, dy)).id);
-      }
+      src.forEach((el, i) => {
+        newIds.push(this.board.addElement(pasteElement(el, idMap, dx, dy, topZ + 1 + i)).id);
+      });
     });
     this.select(newIds);
     return newIds;
+  }
+
+  // --- z-order (stacking) ---
+
+  /**
+   * Brings the given elements (default: the current selection) **to the front** — above every
+   * other element — preserving their relative stacking order. Runs in a single transaction (one
+   * undo step). Returns the number of elements restacked.
+   */
+  bringToFront(ids: readonly string[] = this.getSelection()): number {
+    return this.restack(ids, 'front');
+  }
+
+  /**
+   * Sends the given elements (default: the current selection) **to the back** — below every other
+   * element — preserving their relative stacking order. Single transaction. Returns the number
+   * restacked.
+   */
+  sendToBack(ids: readonly string[] = this.getSelection()): number {
+    return this.restack(ids, 'back');
+  }
+
+  /**
+   * Restacks a set of elements to one edge of the z-order. The moved elements keep their relative
+   * order (read from the current z-ascending listing) and are packed just past the extreme `z` of
+   * the untouched elements, so a whole multi-selection travels together as a block.
+   */
+  private restack(ids: readonly string[], edge: 'front' | 'back'): number {
+    const targets = new Set(ids.filter((id) => this.board.has(id)));
+    if (targets.size === 0) return 0;
+    const all = this.listElements(); // z-ascending, stable
+    const moving = all.filter((el) => targets.has(el.id));
+    const others = all.filter((el) => !targets.has(el.id));
+    let count = 0;
+    this.board.transact(() => {
+      if (edge === 'front') {
+        const base = others.length ? Math.max(...others.map((e) => e.z)) : 0;
+        moving.forEach((el, i) => {
+          if (this.board.updateElement(el.id, { z: base + 1 + i })) count++;
+        });
+      } else {
+        const base = others.length ? Math.min(...others.map((e) => e.z)) : 0;
+        moving.forEach((el, i) => {
+          if (this.board.updateElement(el.id, { z: base - moving.length + i })) count++;
+        });
+      }
+    });
+    return count;
   }
 
   // --- bound connectors ---

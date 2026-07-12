@@ -296,4 +296,72 @@ describe('engine — clipboard (copy / paste)', () => {
     expect(target.board.size).toBe(1);
     expect(target.getSelection()).toEqual(ids);
   });
+
+  it('paste lands the copy on top (z above the current max)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement({ ...(rect('a') as object), z: 5 });
+    const [id] = engine.paste(engine.copySelection()!);
+    expect(engine.board.getElement(id!)?.z).toBe(6); // topZ (5) + 1
+  });
+});
+
+describe('engine — z-order (stacking)', () => {
+  function at(engine: ReturnType<typeof createEngine>, id: string, z: number) {
+    engine.addElement({ ...(rect(id) as object), z }, { select: false });
+  }
+
+  it('bringToFront lifts an element above every other', () => {
+    const engine = createEngine({ clientId: 1 });
+    at(engine, 'a', 0);
+    at(engine, 'b', 1);
+    at(engine, 'c', 2);
+    expect(engine.bringToFront(['a'])).toBe(1);
+    // listElements is z-ascending → 'a' now last (on top).
+    expect(engine.listElements().map((e) => e.id)).toEqual(['b', 'c', 'a']);
+  });
+
+  it('sendToBack drops an element below every other', () => {
+    const engine = createEngine({ clientId: 1 });
+    at(engine, 'a', 0);
+    at(engine, 'b', 1);
+    at(engine, 'c', 2);
+    expect(engine.sendToBack(['c'])).toBe(1);
+    expect(engine.listElements().map((e) => e.id)).toEqual(['c', 'a', 'b']);
+  });
+
+  it('restacking a multi-selection keeps its members in relative order', () => {
+    const engine = createEngine({ clientId: 1 });
+    at(engine, 'a', 0);
+    at(engine, 'b', 1);
+    at(engine, 'c', 2);
+    engine.bringToFront(['a', 'b']); // a below b originally → stays a then b, both above c
+    expect(engine.listElements().map((e) => e.id)).toEqual(['c', 'a', 'b']);
+  });
+
+  it('defaults to the current selection', () => {
+    const engine = createEngine({ clientId: 1 });
+    at(engine, 'a', 0);
+    at(engine, 'b', 1);
+    engine.select(['a']);
+    engine.bringToFront();
+    expect(engine.listElements().map((e) => e.id)).toEqual(['b', 'a']);
+  });
+
+  it('is a single undo step', () => {
+    const engine = createEngine({ clientId: 1 });
+    at(engine, 'a', 0);
+    at(engine, 'b', 1);
+    const history = engine.history();
+    engine.bringToFront(['a']);
+    expect(engine.board.getElement('a')?.z).toBe(2);
+    history.undo();
+    expect(engine.board.getElement('a')?.z).toBe(0);
+  });
+
+  it('empty target = no-op', () => {
+    const engine = createEngine({ clientId: 1 });
+    at(engine, 'a', 0);
+    expect(engine.bringToFront([])).toBe(0);
+    expect(engine.sendToBack(['nope'])).toBe(0);
+  });
 });

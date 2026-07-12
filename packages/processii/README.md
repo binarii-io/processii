@@ -316,9 +316,10 @@ the storage medium — the two never mix.
   `subprocessRef`/`subprocessKind` (a duplicate must not co-own the source's child document, same
   rule as the on-canvas clone). The block is offset onto `at` (its bounding-box **center** lands
   there — e.g. the viewport center for `Ctrl+V`) or by a fixed diagonal **nudge** (in-place
-  duplicate, `Ctrl+D`). All inserts run in a **single transaction** = one undo step; the pasted
-  elements are selected and their new ids returned. `clipboard.ts` (`parseClipboardPayload`,
-  `CLIPBOARD_MARKER`, `CLIPBOARD_VERSION`) is DOM-free and re-exported from `./core`.
+  duplicate, `Ctrl+D`), and lands **on top** (`z` above every existing element, relative order kept).
+  All inserts run in a **single transaction** = one undo step; the pasted elements are selected and
+  their new ids returned. `clipboard.ts` (`parseClipboardPayload`, `CLIPBOARD_MARKER`,
+  `CLIPBOARD_VERSION`) is DOM-free and re-exported from `./core`.
 
 **Storage is injected**, so the _format_ stays in the package but the _medium_ is the host's
 choice. `BoardCanvas` takes an optional **`clipboard: WhiteboardClipboard`** (`write(payload)` /
@@ -327,6 +328,14 @@ choice. `BoardCanvas` takes an optional **`clipboard: WhiteboardClipboard`** (`w
 default: copy-paste works within the same page (across boards navigated in one SPA) but not across
 tabs. A host backs it with the **system clipboard** (`navigator.clipboard` + a payload marker) to
 get cross-tab / cross-app paste. `createMemoryClipboard()` is exported for hosts and tests.
+
+**Z-order** (stacking): `engine.bringToFront(ids?)` / `engine.sendToBack(ids?)` (default: the
+selection) move elements to the front/back — above/below every other element — keeping the moved
+set in its relative order, in a single undo step. **Context menu**: `BoardCanvas` takes an optional
+**`onContextMenu(at, ids)`** — right-clicking selects the element under the cursor (or clears the
+selection on empty space), suppresses the browser's native menu, and hands the host the pointer
+**page** coordinates + the selection so it can render its own menu (z-order, copy/paste…). Omit it
+to keep the default browser menu.
 
 ## Bound connectors & sticky notes
 

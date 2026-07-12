@@ -93,6 +93,14 @@ export interface BoardCanvasProps {
    * the same page (across boards) but not across tabs.
    */
   readonly clipboard?: WhiteboardClipboard;
+  /**
+   * Right-click on the surface. Called with the pointer **page** coordinates (for a fixed-position
+   * menu) and the **selection to act on** — right-clicking an unselected element selects it first;
+   * right-clicking empty space clears the selection (`ids` empty). The native browser menu is
+   * suppressed only when this is provided, so the host can render its own context menu (z-order,
+   * copy/paste…). Omitted → the browser's default menu shows.
+   */
+  readonly onContextMenu?: (at: Point, ids: string[]) => void;
 }
 
 /**
@@ -348,6 +356,7 @@ export function BoardCanvas({
   hideZoomControl,
   onZoomApi,
   clipboard = sharedMemoryClipboard,
+  onContextMenu,
 }: BoardCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -1378,6 +1387,28 @@ export function BoardCanvas({
     draw();
   };
 
+  // Right-click → host context menu. Selects the element under the cursor first (unless already in
+  // the selection), so the menu acts on what was clicked; empty space clears the selection. Only
+  // suppresses the native menu when a host handler is provided.
+  const handleContextMenu = (event: React.MouseEvent<HTMLCanvasElement>): void => {
+    if (!onContextMenu) return;
+    event.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const world = screenToWorld(vpRef.current, screenPoint(canvas, event.clientX, event.clientY));
+    const hit = hitTest(engine.listElements(), world, DEFAULT_HIT_TOLERANCE / vpRef.current.zoom);
+    if (hit) {
+      if (!engine.getSelection().includes(hit.id)) engine.select([hit.id]);
+      onSelectLane?.(null);
+      onSelectGroup?.(null);
+    } else {
+      engine.clearSelection();
+    }
+    onChange?.();
+    draw();
+    onContextMenu({ x: event.clientX, y: event.clientY }, engine.getSelection());
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLCanvasElement>): void => {
     if ((event.metaKey || event.ctrlKey) && (event.key === 'z' || event.key === 'y')) {
       event.preventDefault();
@@ -1568,6 +1599,7 @@ export function BoardCanvas({
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onContextMenu={handleContextMenu}
         onPointerLeave={() => {
           if (awareness) publishCursor(awareness, null);
           if (hoveredGripCluster.current) {

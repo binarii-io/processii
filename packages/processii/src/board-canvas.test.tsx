@@ -586,3 +586,61 @@ describe('BoardCanvas — copy / paste keyboard shortcuts', () => {
     expect(engine.board.size).toBe(2);
   });
 });
+
+describe('BoardCanvas — right-click context menu', () => {
+  it('selects the element under the cursor and calls onContextMenu (page coords + ids)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(
+      { kind: 'rectangle', id: 'a', x: 0, y: 0, width: 100, height: 60 },
+      { select: false },
+    );
+    const onContextMenu = vi.fn();
+    const { getByLabelText } = render(
+      <BoardCanvas engine={engine} width={400} height={300} onContextMenu={onContextMenu} />,
+    );
+    fireEvent.contextMenu(getByLabelText('Surface de dessin du whiteboard'), {
+      clientX: 50,
+      clientY: 30,
+    });
+    expect(engine.getSelection()).toEqual(['a']);
+    expect(onContextMenu).toHaveBeenCalledWith({ x: 50, y: 30 }, ['a']);
+  });
+
+  it('clears the selection when right-clicking empty space', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement({ kind: 'rectangle', id: 'a', x: 0, y: 0, width: 100, height: 60 });
+    const onContextMenu = vi.fn();
+    const { getByLabelText } = render(
+      <BoardCanvas engine={engine} width={400} height={300} onContextMenu={onContextMenu} />,
+    );
+    fireEvent.contextMenu(getByLabelText('Surface de dessin du whiteboard'), {
+      clientX: 300,
+      clientY: 250,
+    });
+    expect(engine.getSelection()).toEqual([]);
+    expect(onContextMenu).toHaveBeenCalledWith({ x: 300, y: 250 }, []);
+  });
+
+  it('keeps a multi-selection when right-clicking one of its members', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(
+      { kind: 'rectangle', id: 'a', x: 0, y: 0, width: 100, height: 60 },
+      { select: false },
+    );
+    engine.addElement(
+      { kind: 'rectangle', id: 'b', x: 200, y: 0, width: 100, height: 60 },
+      { select: false },
+    );
+    engine.select(['a', 'b']);
+    const onContextMenu = vi.fn();
+    const { getByLabelText } = render(
+      <BoardCanvas engine={engine} width={400} height={300} onContextMenu={onContextMenu} />,
+    );
+    fireEvent.contextMenu(getByLabelText('Surface de dessin du whiteboard'), {
+      clientX: 50,
+      clientY: 30,
+    });
+    expect(engine.getSelection()).toEqual(['a', 'b']); // unchanged (clicked member already selected)
+    expect(onContextMenu).toHaveBeenCalledWith({ x: 50, y: 30 }, ['a', 'b']);
+  });
+});
