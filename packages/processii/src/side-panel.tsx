@@ -21,10 +21,18 @@ export interface SidePanelProps {
   readonly selectedGroupId?: string | null;
   /** Deselects the group after it is dissolved. */
   readonly onSelectGroup?: (id: string | null) => void;
-  /** Sub-process: creates a child whiteboard (via the app) and returns its id, to link the step. */
+  /**
+   * Sub-process: provides the whiteboard document to link to the step (the app may **create** one
+   * or let the user **pick an existing** one) and returns its id — or `null` to cancel.
+   */
   readonly onCreateSubprocess?: () => Promise<string | null>;
   /** Sub-process: "enter" the `ref` child whiteboard. */
   readonly onNavigateSubprocess?: (ref: string) => void;
+  /**
+   * Sub-process: resolves the linked `ref` into a human label (e.g. the document title). Absent
+   * or `undefined` result → the panel shows no name (the ref stays opaque, never displayed raw).
+   */
+  readonly resolveSubprocessLabel?: (ref: string) => string | undefined;
 }
 
 /** Swatch of a swimlane color (extension palette; neutral = ui-kit token). */
@@ -109,6 +117,7 @@ export function SidePanel({
   onSelectGroup,
   onCreateSubprocess,
   onNavigateSubprocess,
+  resolveSubprocessLabel,
 }: SidePanelProps) {
   const group = selectedGroupId
     ? (engine.listAgentGroups().find((g) => g.id === selectedGroupId) ?? null)
@@ -353,36 +362,67 @@ export function SidePanel({
         </div>
         {(onCreateSubprocess || s.subprocessRef) && (
           <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted">Sous-process</span>
+            <span className="text-xs text-muted">Process lié</span>
             {s.subprocessRef ? (
-              <div className="flex gap-2">
-                {onNavigateSubprocess && (
+              <>
+                {/* Name of the linked document (host-resolved); the raw ref is never displayed. */}
+                {resolveSubprocessLabel?.(s.subprocessRef) !== undefined && (
+                  <span className="truncate text-sm text-text">
+                    {resolveSubprocessLabel(s.subprocessRef)}
+                  </span>
+                )}
+                {/* Indicative kind of the link (display-only): absent = sub-process (default). */}
+                <div className="flex gap-1">
+                  {(
+                    [
+                      ['sub', 'Sous-process'],
+                      ['external', 'Process externe'],
+                    ] as const
+                  ).map(([kind, label]) => (
+                    <Button
+                      key={kind}
+                      size="sm"
+                      variant={(s.subprocessKind ?? 'sub') === kind ? 'primary' : 'ghost'}
+                      aria-label={`Type de lien : ${label}`}
+                      onClick={() => {
+                        engine.updateElement(s.id, { subprocessKind: kind });
+                        onChange?.();
+                      }}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  {onNavigateSubprocess && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => onNavigateSubprocess(s.subprocessRef!)}
+                    >
+                      Ouvrir
+                    </Button>
+                  )}
                   <Button
                     size="sm"
-                    variant="secondary"
-                    onClick={() => onNavigateSubprocess(s.subprocessRef!)}
+                    variant="ghost"
+                    aria-label="Délier le process"
+                    onClick={() => {
+                      // Unlink clears the kind too: a future link starts back from the default.
+                      engine.updateElement(s.id, { subprocessRef: null, subprocessKind: null });
+                      onChange?.();
+                    }}
                   >
-                    Ouvrir
+                    Délier
                   </Button>
-                )}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label="Délier le sous-process"
-                  onClick={() => {
-                    engine.updateElement(s.id, { subprocessRef: null });
-                    onChange?.();
-                  }}
-                >
-                  Délier
-                </Button>
-              </div>
+                </div>
+              </>
             ) : (
               onCreateSubprocess && (
                 <Button
                   size="sm"
                   variant="secondary"
-                  aria-label="Lier un sous-process à cette étape"
+                  aria-label="Lier un process à cette étape"
                   onClick={() => {
                     void onCreateSubprocess().then((ref) => {
                       if (!ref) return;
@@ -391,7 +431,7 @@ export function SidePanel({
                     });
                   }}
                 >
-                  Lier un sous-process
+                  Lier un process
                 </Button>
               )
             )}

@@ -26,6 +26,14 @@ export const STEP_EMOTIONS = ['happy', 'neutral', 'sad'] as const;
 export type StepEmotion = (typeof STEP_EMOTIONS)[number];
 
 /**
+ * Indicative nature of a step's linked process ({@link stepSchema}.`subprocessKind`): `sub` = a
+ * nested sub-process, `external` = another process referenced from here. **Display-only** — any
+ * whiteboard the host can resolve may be linked either way; the kind never constrains navigation.
+ */
+export const SUBPROCESS_KINDS = ['sub', 'external'] as const;
+export type SubprocessKind = (typeof SUBPROCESS_KINDS)[number];
+
+/**
  * Board **type** — a scene-level classification of the whole board. A host can key behaviour off it
  * (templates, default tools) or simply display/filter by it. **Phase 1 is a label only**: the engine
  * renders and behaves identically for every type. Additive, optional with a default (`ideation`) →
@@ -213,6 +221,11 @@ export const stepSchema = z.object({
    * displays it (badge) and surfaces a double-click via `onNavigateSubprocess`.
    */
   subprocessRef: z.string().min(1).optional(),
+  /**
+   * Indicative kind of the linked process ({@link SUBPROCESS_KINDS}) — meaningful only alongside
+   * `subprocessRef`; absent means `sub` (historical default). Display-only, never interpreted.
+   */
+  subprocessKind: z.enum(SUBPROCESS_KINDS).optional(),
 });
 
 /** Discriminated schema of any scene element. */

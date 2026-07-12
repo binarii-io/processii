@@ -28,6 +28,7 @@ import {
   type Marker,
   type Scene,
   type StepEmotion,
+  type SubprocessKind,
   type Swimlane,
   type SwimlaneCluster,
   type WhiteboardElement,
@@ -117,6 +118,8 @@ export type ElementPatch = Partial<{
   swimlaneId: string;
   /** Sub-process link (child document id); `null` = unlink (clear the field). */
   subprocessRef: string | null;
+  /** Indicative kind of the linked process (sub/external); `null` = clear (back to default). */
+  subprocessKind: SubprocessKind | null;
   /** Host extension bag (opaque app metadata, passed through untouched); `null` = clear it. */
   data: Record<string, unknown> | null;
 }>;

@@ -250,15 +250,20 @@ The **board background color** is shared too (`engine.get/setBackground`, meta m
 or empty string resets). The `Toolbar`'s **color block** (swatch + soft-tone popover +
 "Par défaut") drives it; `BoardCanvas` applies it as the `<canvas>` background.
 
-**Sub-process.** A step can carry a `subprocessRef`: the **opaque id** of a child whiteboard
-document. The package stays **document-agnostic** — it does not know what `ref` is, it
+**Sub-process (process link).** A step can carry a `subprocessRef`: the **opaque id** of a linked
+whiteboard document. The package stays **document-agnostic** — it does not know what `ref` is, it
 **displays** it (↗ badge + indicator on the card) and **surfaces a double-click** via
-`onNavigateSubprocess(ref)`. The **creation** of the child document is also delegated to the app
-via `onCreateSubprocess(): Promise<string | null>` (returns the new child's id), wired to the
-toolbar's **"Sous-process"** button and the `SidePanel` section (link / open / unlink).
-Unlinking = `engine.updateElement(id, { subprocessRef: null })`. Both callbacks are props of
-`WhiteboardEditor`; each app (web sync, P2P standalone) plugs in its own document management
-(child creation, navigation by id).
+`onNavigateSubprocess(ref)`. Providing the linked document is also delegated to the app via
+`onCreateSubprocess(): Promise<string | null>` (the app may **create** a child or let the user
+**pick an existing** whiteboard; returns its id), wired to the toolbar's **"Sous-process"** button
+and the `SidePanel` section (link / open / unlink). The optional `subprocessKind`
+(`SUBPROCESS_KINDS`: `'sub' | 'external'`, absent = `sub`) is an **indicative, display-only label**
+of the link's nature — nested sub-process vs a process living elsewhere — edited from the panel and
+never interpreted. The panel can show the linked document's **name** through
+`resolveSubprocessLabel?: (ref) => string | undefined` (the raw ref is never displayed). Unlinking =
+`engine.updateElement(id, { subprocessRef: null, subprocessKind: null })`. These callbacks are props
+of `WhiteboardEditor`; each app (web sync, P2P standalone) plugs in its own document management
+(child creation/picking, navigation by id, label resolution).
 
 > The `subprocessRef` is **owned by the source step**: creating a **connected** item (connection
 > handles: "direction" click or drag-to-empty-space) takes the type/style but **starts blank of
@@ -536,27 +541,32 @@ getAgentOp('connect')?.run(engine, { from, to }); // → { id }
 getAgentOp('read_board')?.run(engine, {}); // → lossless Scene snapshot
 ```
 
-**Catalog** (twelve ops):
+**Catalog** (fourteen ops):
 
-| Op                | Input                                                                             | Returns                                                                                                                  |
-| ----------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `read_board`      | `{}`                                                                              | lossless `Scene` snapshot (board type + every element/lane/group with its id)                                            |
-| `add_step`        | `{ name, x, y, width?, height?, description?, swimlaneId?, id? }`                 | `{ id }` (process node)                                                                                                  |
-| `connect`         | `{ from, to, id? }`                                                               | `{ id }` (bound directed arrow)                                                                                          |
-| `set_board_type`  | `{ boardType: 'process' \| 'architecture' \| 'ideation' }`                        | `{ boardType }`                                                                                                          |
-| `add_element`     | `{ kind: 'rectangle' \| 'ellipse' \| 'text', x, y, width?, height?, text?, id? }` | `{ id }` (free shape)                                                                                                    |
-| `add_swimlane`    | `{ name?, laneType?: 'user' \| 'system' \| 'custom', color?, id? }`               | `{ id }` (lane)                                                                                                          |
-| `update_swimlane` | `{ id, name?, laneType?, customType?, color?, height?, width? }`                  | `{ id }` (patch of the provided fields — panel + canvas-handle edits; `width` is the lane block's shared width, min 200) |
-| `delete_swimlane` | `{ id }`                                                                          | `{ id }` (steps are NOT deleted with the lane)                                                                           |
-| `add_group`       | `{ name?, stepIds?: string[], id? }`                                              | `{ id }` (named step group)                                                                                              |
-| `move_element`    | `{ id, dx, dy }`                                                                  | `{ id }` (relative move)                                                                                                 |
-| `update_element`  | `{ id, text?, x?, y?, width?, height?, fill?, stroke? }`                          | `{ id }` (patch of the provided fields)                                                                                  |
-| `delete_element`  | `{ id }`                                                                          | `{ id }`                                                                                                                 |
+| Op                  | Input                                                                             | Returns                                                                                                                  |
+| ------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `read_board`        | `{}`                                                                              | lossless `Scene` snapshot (board type + every element/lane/group with its id)                                            |
+| `add_step`          | `{ name, x, y, width?, height?, description?, swimlaneId?, id? }`                 | `{ id }` (process node)                                                                                                  |
+| `connect`           | `{ from, to, id? }`                                                               | `{ id }` (bound directed arrow)                                                                                          |
+| `set_board_type`    | `{ boardType: 'process' \| 'architecture' \| 'ideation' }`                        | `{ boardType }`                                                                                                          |
+| `link_subprocess`   | `{ id, ref, kind?: 'sub' \| 'external' }`                                         | `{ id }` (links the host document `ref` to step `id`; `kind` is indicative, omitted = kept)                              |
+| `unlink_subprocess` | `{ id }`                                                                          | `{ id }` (clears the step's `subprocessRef` **and** `subprocessKind`)                                                    |
+| `add_element`       | `{ kind: 'rectangle' \| 'ellipse' \| 'text', x, y, width?, height?, text?, id? }` | `{ id }` (free shape)                                                                                                    |
+| `add_swimlane`      | `{ name?, laneType?: 'user' \| 'system' \| 'custom', color?, id? }`               | `{ id }` (lane)                                                                                                          |
+| `update_swimlane`   | `{ id, name?, laneType?, customType?, color?, height?, width? }`                  | `{ id }` (patch of the provided fields — panel + canvas-handle edits; `width` is the lane block's shared width, min 200) |
+| `delete_swimlane`   | `{ id }`                                                                          | `{ id }` (steps are NOT deleted with the lane)                                                                           |
+| `add_group`         | `{ name?, stepIds?: string[], id? }`                                              | `{ id }` (named step group)                                                                                              |
+| `move_element`      | `{ id, dx, dy }`                                                                  | `{ id }` (relative move)                                                                                                 |
+| `update_element`    | `{ id, text?, x?, y?, width?, height?, fill?, stroke? }`                          | `{ id }` (patch of the provided fields)                                                                                  |
+| `delete_element`    | `{ id }`                                                                          | `{ id }`                                                                                                                 |
 
 `add_*` accept an optional explicit `id` (else one is generated) for deterministic host/test output.
 `move_element`/`update_element`/`delete_element` — and their swimlane counterparts — throw
 **`AgentOpError`** when the id is unknown, so a host can surface a "not found" tool error
 (`update_swimlane` also rejects an id-only call: an empty patch would otherwise be a silent no-op).
+`link_subprocess`/`unlink_subprocess` only accept a **step** target (on any other kind the zod merge
+would silently strip the field — they throw instead), and unlinking an unlinked step is an error,
+not a silent no-op.
 This is an **additive** catalog — the ops are pure-CRUD over the existing engine writes and add no
 new element kind, so **no `DOC_SCHEMA_VERSION` bump** (see `board.ts`).
 
