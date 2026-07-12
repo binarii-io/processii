@@ -184,7 +184,8 @@ const linkSubprocess = defineOp({
     'Link a process (another whiteboard document) to a step: the step shows a badge and humans ' +
     'can open the linked process from it (double-click / side panel). `ref` is the host document ' +
     'id of the target whiteboard. `kind` is an indicative label only: "sub" (nested sub-process, ' +
-    'the default) or "external" (a process living elsewhere). Returns the step id.',
+    'the default) or "external" (a process living elsewhere) — omitted, a RE-link keeps the ' +
+    'current label while a fresh link resets it to the default. Returns the step id.',
   inputSchema: z.object({
     id: z.string().min(1).describe('Id of the step to link (see `read_board`).'),
     ref: z.string().min(1).describe('Host document id of the whiteboard to link.'),
@@ -208,9 +209,15 @@ const linkSubprocess = defineOp({
     }
     engine.updateElement(input.id, {
       subprocessRef: input.ref,
-      // Respect exactOptionalPropertyTypes: only touch the kind when actually provided (a re-link
-      // without `kind` keeps the current label).
-      ...(input.kind !== undefined ? { subprocessKind: input.kind } : {}),
+      // `kind` omitted: a RE-link (the step already points somewhere) keeps the current label,
+      // but a FRESH link explicitly resets it — per-key LWW merging of concurrent link/unlink can
+      // leave an orphan/stale `subprocessKind` behind, and silently inheriting it would resurrect
+      // a label nobody chose for this link. (Respect exactOptionalPropertyTypes throughout.)
+      ...(input.kind !== undefined
+        ? { subprocessKind: input.kind }
+        : element.subprocessRef === undefined
+          ? { subprocessKind: null }
+          : {}),
     });
     return { id: input.id };
   },

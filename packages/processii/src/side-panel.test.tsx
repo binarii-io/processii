@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { createEngine } from './engine.js';
 import { SidePanel } from './side-panel.js';
@@ -56,6 +56,95 @@ describe('SidePanel — step editing', () => {
     const { getByRole } = render(<SidePanel engine={engine} selectedLaneId={null} />);
     fireEvent.click(getByRole('button', { name: "Supprimer l'étape" }));
     expect(engine.board.size).toBe(0);
+  });
+});
+
+describe('SidePanel — process link (sub-process)', () => {
+  /** A step already linked to a host document, selected (addElement selects by default). */
+  function linkedEngine(kind?: 'sub' | 'external') {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement({
+      kind: 'step',
+      id: 's1',
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 120,
+      name: 'A',
+      subprocessRef: 'doc-1',
+      ...(kind ? { subprocessKind: kind } : {}),
+    });
+    return engine;
+  }
+
+  it('shows the host-resolved label of the linked document, never the raw ref', () => {
+    const engine = linkedEngine();
+    const { getByText, queryByText } = render(
+      <SidePanel
+        engine={engine}
+        selectedLaneId={null}
+        resolveSubprocessLabel={(ref) => (ref === 'doc-1' ? 'Child process' : undefined)}
+      />,
+    );
+    expect(getByText('Child process')).toBeInTheDocument();
+    expect(queryByText('doc-1')).toBeNull();
+  });
+
+  it('without a resolver (or unresolved ref), no name is shown — the ref stays opaque', () => {
+    const engine = linkedEngine();
+    const { queryByText } = render(<SidePanel engine={engine} selectedLaneId={null} />);
+    expect(queryByText('doc-1')).toBeNull();
+  });
+
+  it('edits the indicative kind via the selector (default = sub, click = external)', () => {
+    const engine = linkedEngine();
+    const { getByLabelText } = render(<SidePanel engine={engine} selectedLaneId={null} />);
+    fireEvent.click(getByLabelText('Type de lien : Process externe'));
+    expect(engine.board.getElement('s1')).toMatchObject({ subprocessKind: 'external' });
+    fireEvent.click(getByLabelText('Type de lien : Sous-process'));
+    expect(engine.board.getElement('s1')).toMatchObject({ subprocessKind: 'sub' });
+  });
+
+  it('"Délier" clears the ref AND the kind', () => {
+    const engine = linkedEngine('external');
+    const { getByLabelText } = render(<SidePanel engine={engine} selectedLaneId={null} />);
+    fireEvent.click(getByLabelText('Délier le process'));
+    const el = engine.board.getElement('s1');
+    expect(el?.kind).toBe('step');
+    if (el?.kind === 'step') {
+      expect(el.subprocessRef).toBeUndefined();
+      expect(el.subprocessKind).toBeUndefined();
+    }
+  });
+
+  it('"Lier un process" resolves the host callback into the step link', async () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement({ kind: 'step', id: 's1', x: 0, y: 0, width: 200, height: 120, name: 'A' });
+    const { getByLabelText } = render(
+      <SidePanel
+        engine={engine}
+        selectedLaneId={null}
+        onCreateSubprocess={() => Promise.resolve('doc-9')}
+      />,
+    );
+    fireEvent.click(getByLabelText('Lier un process à cette étape'));
+    await waitFor(() =>
+      expect(engine.board.getElement('s1')).toMatchObject({ subprocessRef: 'doc-9' }),
+    );
+  });
+
+  it('navigates to the linked process via "Ouvrir"', () => {
+    const engine = linkedEngine();
+    const opened: string[] = [];
+    const { getByRole } = render(
+      <SidePanel
+        engine={engine}
+        selectedLaneId={null}
+        onNavigateSubprocess={(ref) => opened.push(ref)}
+      />,
+    );
+    fireEvent.click(getByRole('button', { name: 'Ouvrir' }));
+    expect(opened).toEqual(['doc-1']);
   });
 });
 

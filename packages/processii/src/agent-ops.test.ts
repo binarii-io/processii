@@ -421,6 +421,20 @@ describe('agent-ops', () => {
     expect(step).toMatchObject({ subprocessRef: 'doc-2', subprocessKind: 'external' });
   });
 
+  it('link_subprocess without kind on a FRESH link resets an orphan/stale kind (LWW cleanup)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    // Orphan kind without a ref — what a per-key LWW merge of concurrent link/unlink can leave.
+    engine.updateElement(id, { subprocessKind: 'external' });
+    op('link_subprocess').run(engine, { id, ref: 'doc-1' });
+    const step = (op('read_board').run(engine, {}) as Scene).elements.find((e) => e.id === id) as
+      | Record<string, unknown>
+      | undefined;
+    // The fresh link starts back from the default: the stale label is NOT resurrected.
+    expect(step?.subprocessRef).toBe('doc-1');
+    expect(step?.subprocessKind).toBeUndefined();
+  });
+
   it('link_subprocess throws AgentOpError on an unknown id, a non-step target and invalid input', () => {
     const engine = createEngine({ clientId: 1 });
     expect(() => op('link_subprocess').run(engine, { id: 'ghost', ref: 'doc-1' })).toThrow(
