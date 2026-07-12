@@ -47,6 +47,8 @@ export interface WhiteboardEditorProps {
   readonly onCreateSubprocess?: () => Promise<string | null>;
   /** **Sub-process** — "enter" the `ref` child whiteboard (double-click / Open button). */
   readonly onNavigateSubprocess?: (ref: string) => void;
+  /** **Sub-process** — resolves a linked `ref` into a human label (document title), for the panel. */
+  readonly resolveSubprocessLabel?: (ref: string) => string | undefined;
   /** Class of the full-frame container (positioning by the host app). */
   readonly className?: string;
 }
@@ -70,6 +72,7 @@ export function WhiteboardEditor({
   editable = true,
   onCreateSubprocess,
   onNavigateSubprocess,
+  resolveSubprocessLabel,
   className,
 }: WhiteboardEditorProps) {
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
@@ -156,6 +159,7 @@ export function WhiteboardEditor({
             onSelectGroup={setSelectedGroupId}
             {...(onCreateSubprocess ? { onCreateSubprocess } : {})}
             {...(onNavigateSubprocess ? { onNavigateSubprocess } : {})}
+            {...(resolveSubprocessLabel ? { resolveSubprocessLabel } : {})}
           />
         </aside>
       )}

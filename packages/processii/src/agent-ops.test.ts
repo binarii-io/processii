@@ -401,13 +401,91 @@ describe('agent-ops', () => {
     expect(() => op('delete_element').run(engine, { id: 'ghost' })).toThrow(AgentOpError);
   });
 
-  it('exposes all twelve ops resolvable by name', () => {
+  it('link_subprocess links a whiteboard ref (with its kind) to a step, visible via read_board', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    const res = op('link_subprocess').run(engine, { id, ref: 'doc-1', kind: 'external' }) as {
+      id: string;
+    };
+    expect(res.id).toBe(id);
+    const step = (op('read_board').run(engine, {}) as Scene).elements.find((e) => e.id === id);
+    expect(step).toMatchObject({ subprocessRef: 'doc-1', subprocessKind: 'external' });
+  });
+
+  it('link_subprocess without kind keeps the current label (re-link preserves it)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    op('link_subprocess').run(engine, { id, ref: 'doc-1', kind: 'external' });
+    op('link_subprocess').run(engine, { id, ref: 'doc-2' });
+    const step = (op('read_board').run(engine, {}) as Scene).elements.find((e) => e.id === id);
+    expect(step).toMatchObject({ subprocessRef: 'doc-2', subprocessKind: 'external' });
+  });
+
+  it('link_subprocess without kind on a FRESH link resets an orphan/stale kind (LWW cleanup)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    // Orphan kind without a ref — what a per-key LWW merge of concurrent link/unlink can leave.
+    engine.updateElement(id, { subprocessKind: 'external' });
+    op('link_subprocess').run(engine, { id, ref: 'doc-1' });
+    const step = (op('read_board').run(engine, {}) as Scene).elements.find((e) => e.id === id) as
+      | Record<string, unknown>
+      | undefined;
+    // The fresh link starts back from the default: the stale label is NOT resurrected.
+    expect(step?.subprocessRef).toBe('doc-1');
+    expect(step?.subprocessKind).toBeUndefined();
+  });
+
+  it('link_subprocess throws AgentOpError on an unknown id, a non-step target and invalid input', () => {
+    const engine = createEngine({ clientId: 1 });
+    expect(() => op('link_subprocess').run(engine, { id: 'ghost', ref: 'doc-1' })).toThrow(
+      AgentOpError,
+    );
+    const { id: rect } = op('add_element').run(engine, { kind: 'rectangle', x: 0, y: 0 }) as {
+      id: string;
+    };
+    expect(() => op('link_subprocess').run(engine, { id: rect, ref: 'doc-1' })).toThrow(
+      AgentOpError,
+    );
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    expect(() => op('link_subprocess').run(engine, { id, ref: '' })).toThrow(AgentOpError);
+    expect(() => op('link_subprocess').run(engine, { id, ref: 'doc-1', kind: 'nested' })).toThrow(
+      AgentOpError,
+    );
+  });
+
+  it('unlink_subprocess clears the ref AND the kind of a linked step', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    op('link_subprocess').run(engine, { id, ref: 'doc-1', kind: 'external' });
+    const res = op('unlink_subprocess').run(engine, { id }) as { id: string };
+    expect(res.id).toBe(id);
+    const step = (op('read_board').run(engine, {}) as Scene).elements.find((e) => e.id === id) as
+      | Record<string, unknown>
+      | undefined;
+    expect(step?.subprocessRef).toBeUndefined();
+    expect(step?.subprocessKind).toBeUndefined();
+  });
+
+  it('unlink_subprocess throws AgentOpError on an unknown id, a non-step and an unlinked step', () => {
+    const engine = createEngine({ clientId: 1 });
+    expect(() => op('unlink_subprocess').run(engine, { id: 'ghost' })).toThrow(AgentOpError);
+    const { id: rect } = op('add_element').run(engine, { kind: 'rectangle', x: 0, y: 0 }) as {
+      id: string;
+    };
+    expect(() => op('unlink_subprocess').run(engine, { id: rect })).toThrow(AgentOpError);
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    expect(() => op('unlink_subprocess').run(engine, { id })).toThrow(AgentOpError);
+  });
+
+  it('exposes all fourteen ops resolvable by name', () => {
     const names = AGENT_OPS.map((o) => o.name);
     expect(names).toEqual([
       'read_board',
       'add_step',
       'connect',
       'set_board_type',
+      'link_subprocess',
+      'unlink_subprocess',
       'add_element',
       'add_swimlane',
       'update_swimlane',

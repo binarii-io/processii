@@ -21,6 +21,7 @@
 export {
   ELEMENT_KINDS,
   STEP_EMOTIONS,
+  SUBPROCESS_KINDS,
   BOARD_TYPES,
   SWIMLANE_COLORS,
   CONNECTOR_SIDES,
@@ -40,6 +41,7 @@ export {
   WhiteboardSchemaVersionError,
   type ElementKind,
   type StepEmotion,
+  type SubprocessKind,
   type BoardType,
   type SwimlaneColor,
   type ConnectorSide,

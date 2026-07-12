@@ -11,13 +11,19 @@
  *
  * Reuses the exported domain schema (`BOARD_TYPES`, `SWIMLANE_COLORS`, the engine's validated
  * writes) — it never redeclares element shapes. Catalog: reads (`read_board`), a process-oriented
- * layer (`add_step`, `connect`, `set_board_type`) and a full element CRUD (`add_element`,
- * `add_swimlane`, `update_swimlane`, `delete_swimlane`, `add_group`, `move_element`,
- * `update_element`, `delete_element`).
+ * layer (`add_step`, `connect`, `set_board_type`, `link_subprocess`, `unlink_subprocess`) and a
+ * full element CRUD (`add_element`, `add_swimlane`, `update_swimlane`, `delete_swimlane`,
+ * `add_group`, `move_element`, `update_element`, `delete_element`).
  */
 import { z } from 'zod';
 import type { WhiteboardEngine } from './engine.js';
-import { BOARD_TYPES, SWIMLANE_COLORS, type BoardType, type Scene } from './scene.js';
+import {
+  BOARD_TYPES,
+  SUBPROCESS_KINDS,
+  SWIMLANE_COLORS,
+  type BoardType,
+  type Scene,
+} from './scene.js';
 
 /** Default size (world units) of a step card created by {@link addStep} when unspecified. */
 const DEFAULT_STEP_WIDTH = 220;
@@ -169,6 +175,79 @@ const setBoardType = defineOp({
   execute: (engine, input): { boardType: BoardType } => {
     engine.setBoardType(input.boardType);
     return { boardType: input.boardType };
+  },
+});
+
+const linkSubprocess = defineOp({
+  name: 'link_subprocess',
+  description:
+    'Link a process (another whiteboard document) to a step: the step shows a badge and humans ' +
+    'can open the linked process from it (double-click / side panel). `ref` is the host document ' +
+    'id of the target whiteboard. `kind` is an indicative label only: "sub" (nested sub-process, ' +
+    'the default) or "external" (a process living elsewhere) — omitted, a RE-link keeps the ' +
+    'current label while a fresh link resets it to the default. Returns the step id.',
+  inputSchema: z.object({
+    id: z.string().min(1).describe('Id of the step to link (see `read_board`).'),
+    ref: z.string().min(1).describe('Host document id of the whiteboard to link.'),
+    kind: z
+      .enum(SUBPROCESS_KINDS)
+      .optional()
+      .describe('Indicative kind of the link: "sub" (default) or "external".'),
+  }),
+  execute: (engine, input): { id: string } => {
+    // `subprocessRef`/`subprocessKind` only exist on steps; on any other kind the zod merge in
+    // `updateElement` would silently STRIP the unknown key — guard here so the model gets a typed
+    // error instead of a write that looks applied but is not.
+    const element = engine.board.getElement(input.id);
+    if (!element) {
+      throw new AgentOpError(`Element "${input.id}" not found.`);
+    }
+    if (element.kind !== 'step') {
+      throw new AgentOpError(
+        `Element "${input.id}" is not a step — only steps can link a process.`,
+      );
+    }
+    engine.updateElement(input.id, {
+      subprocessRef: input.ref,
+      // `kind` omitted: a RE-link (the step already points somewhere) keeps the current label,
+      // but a FRESH link explicitly resets it — per-key LWW merging of concurrent link/unlink can
+      // leave an orphan/stale `subprocessKind` behind, and silently inheriting it would resurrect
+      // a label nobody chose for this link. (Respect exactOptionalPropertyTypes throughout.)
+      ...(input.kind !== undefined
+        ? { subprocessKind: input.kind }
+        : element.subprocessRef === undefined
+          ? { subprocessKind: null }
+          : {}),
+    });
+    return { id: input.id };
+  },
+});
+
+const unlinkSubprocess = defineOp({
+  name: 'unlink_subprocess',
+  description:
+    'Remove the process link of a step (the step itself and the linked document are kept). ' +
+    'Returns the step id.',
+  inputSchema: z.object({
+    id: z.string().min(1).describe('Id of the step to unlink (see `read_board`).'),
+  }),
+  execute: (engine, input): { id: string } => {
+    const element = engine.board.getElement(input.id);
+    if (!element) {
+      throw new AgentOpError(`Element "${input.id}" not found.`);
+    }
+    if (element.kind !== 'step') {
+      throw new AgentOpError(
+        `Element "${input.id}" is not a step — only steps can link a process.`,
+      );
+    }
+    // An unlink on a step without a link would "succeed" without changing anything — surface it
+    // to the model instead (same contract as an id-only update_swimlane).
+    if (!element.subprocessRef) {
+      throw new AgentOpError(`Step "${input.id}" has no linked process.`);
+    }
+    engine.updateElement(input.id, { subprocessRef: null, subprocessKind: null });
+    return { id: input.id };
   },
 });
 
@@ -431,6 +510,8 @@ export const AGENT_OPS: readonly AgentOp[] = [
   addStep,
   connect,
   setBoardType,
+  linkSubprocess,
+  unlinkSubprocess,
   addElement,
   addSwimlane,
   updateSwimlane,
