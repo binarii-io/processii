@@ -17,6 +17,7 @@
  */
 import { z } from 'zod';
 import type { WhiteboardEngine } from './engine.js';
+import { newId } from './id.js';
 import {
   BOARD_TYPES,
   SUBPROCESS_KINDS,
@@ -79,20 +80,6 @@ function defineOp<S extends z.ZodType, Output>(spec: {
       return spec.execute(engine, result.data);
     },
   };
-}
-
-let idSeq = 0;
-/**
- * Fresh opaque id for a created element (`<prefix>:<id>`). Uses `crypto.randomUUID` when available
- * (Node ≥ 19, browsers) with a timestamp+counter fallback for older runtimes. Ids are host-opaque;
- * a host/test can also pass an explicit `id` to an op for deterministic output.
- */
-function newId(prefix: string): string {
-  const rand =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `${Date.now().toString(36)}-${(idSeq++).toString(36)}`;
-  return `${prefix}:${rand}`;
 }
 
 const readBoard = defineOp({

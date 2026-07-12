@@ -73,6 +73,17 @@ export {
   type RenderModel,
 } from './engine.js';
 
+// --- Clipboard (copy/paste of elements — portable across boards) ---
+export {
+  CLIPBOARD_MARKER,
+  CLIPBOARD_VERSION,
+  clipboardPayloadSchema,
+  parseClipboardPayload,
+  createMemoryClipboard,
+  type ClipboardPayload,
+  type WhiteboardClipboard,
+} from './clipboard.js';
+
 // --- 2D Canvas rendering ---
 export {
   renderToCanvas,

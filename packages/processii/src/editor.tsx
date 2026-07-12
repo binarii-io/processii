@@ -3,6 +3,7 @@ import type { CrdtAwareness, CrdtDoc } from './crdt/index.js';
 import { engineFromDoc, type BoundingBox, type WhiteboardEngine } from './engine.js';
 import { publishIdentity } from './presence.js';
 import { BoardCanvas, type ZoomApi } from './board-canvas.js';
+import type { WhiteboardClipboard } from './clipboard.js';
 import { SidePanel } from './side-panel.js';
 import { Toolbar } from './toolbar.js';
 import {
@@ -49,6 +50,12 @@ export interface WhiteboardEditorProps {
   readonly onNavigateSubprocess?: (ref: string) => void;
   /** **Sub-process** — resolves a linked `ref` into a human label (document title), for the panel. */
   readonly resolveSubprocessLabel?: (ref: string) => string | undefined;
+  /**
+   * Copy/paste storage medium (`Ctrl/⌘+C`/`X`/`V`/`D`). Forwarded to `BoardCanvas` — omit for the
+   * shared in-memory default, inject a `navigator.clipboard`-backed adapter for cross-tab paste.
+   * See {@link WhiteboardClipboard}.
+   */
+  readonly clipboard?: WhiteboardClipboard;
   /** Class of the full-frame container (positioning by the host app). */
   readonly className?: string;
 }
@@ -73,6 +80,7 @@ export function WhiteboardEditor({
   onCreateSubprocess,
   onNavigateSubprocess,
   resolveSubprocessLabel,
+  clipboard,
   className,
 }: WhiteboardEditorProps) {
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
@@ -140,6 +148,7 @@ export function WhiteboardEditor({
           onViewportChange={handleViewportChange}
           onZoomApi={handleZoomApi}
           {...(onNavigateSubprocess ? { onNavigateSubprocess } : {})}
+          {...(clipboard ? { clipboard } : {})}
         />
       </div>
 

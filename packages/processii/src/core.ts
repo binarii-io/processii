@@ -73,6 +73,17 @@ export {
   type RenderModel,
 } from './engine.js';
 
+// --- Clipboard (copy/paste of elements — portable across boards; React-free) ---
+export {
+  CLIPBOARD_MARKER,
+  CLIPBOARD_VERSION,
+  clipboardPayloadSchema,
+  parseClipboardPayload,
+  createMemoryClipboard,
+  type ClipboardPayload,
+  type WhiteboardClipboard,
+} from './clipboard.js';
+
 // --- 2D Canvas rendering ---
 // DOM-free: draws onto any `CanvasLike` (a `CanvasRenderingContext2D` in the browser, or a headless
 // 2D context in Node — e.g. `node-canvas`). No `react`/`react-dom`, no `document`/`window`.

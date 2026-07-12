@@ -27,6 +27,9 @@ import type {
 import { LEGACY_CLUSTER_ID } from './scene.js';
 import type { WhiteboardHistory } from './history.js';
 import { connectorGeometry } from './connector.js';
+import { newId } from './id.js';
+import { CLIPBOARD_MARKER, CLIPBOARD_VERSION, type ClipboardPayload } from './clipboard.js';
+import type { Point } from './viewport.js';
 
 /** Axis-aligned rectangle (world bounding box). */
 export interface BoundingBox {
@@ -82,6 +85,49 @@ function intersectionArea(a: BoundingBox, b: BoundingBox): number {
  * the label placement (`render.ts`), so all three stay in sync.
  */
 export const GROUP_HEADER_HEIGHT = 32;
+
+/**
+ * Diagonal offset (world units) applied to a {@link WhiteboardEngine.paste} / duplicate with no
+ * explicit anchor, so the copy is visibly nudged from the source instead of landing exactly on it.
+ */
+const PASTE_NUDGE = 16;
+
+/** Detached deep copy of an element (JSON-safe — elements are pure data). Guards a held clipboard
+ *  payload against a later mutation of the source board. */
+function cloneElement(el: WhiteboardElement): WhiteboardElement {
+  return JSON.parse(JSON.stringify(el)) as WhiteboardElement;
+}
+
+/**
+ * Rebuilds a copied element for pasting: assigns its **fresh id** (from `idMap`), applies the
+ * `(dx, dy)` block offset, remaps connector endpoints within the copied set (dropping bindings to
+ * elements that were not copied), and clears the board-scoped links a copy must not carry
+ * (`swimlaneId`, `subprocessRef`/`subprocessKind`). Returns a new element (never mutates `el`).
+ */
+function pasteElement(
+  el: WhiteboardElement,
+  idMap: ReadonlyMap<string, string>,
+  dx: number,
+  dy: number,
+): WhiteboardElement {
+  const next = { ...el, id: idMap.get(el.id)!, x: el.x + dx, y: el.y + dy };
+  if (next.kind === 'line' || next.kind === 'arrow') {
+    // Keep a binding only when its target was copied too; otherwise the connector becomes a free
+    // (unbound) line at the offset position rather than pointing at an unrelated element.
+    const start = next.start ? idMap.get(next.start) : undefined;
+    const end = next.end ? idMap.get(next.end) : undefined;
+    if (start) next.start = start;
+    else delete next.start;
+    if (end) next.end = end;
+    else delete next.end;
+  }
+  if (next.kind === 'step') {
+    delete next.swimlaneId;
+    delete next.subprocessRef;
+    delete next.subprocessKind;
+  }
+  return next;
+}
 
 export class WhiteboardEngine {
   readonly board: WhiteboardBoard;
@@ -181,6 +227,61 @@ export class WhiteboardEngine {
       if (this.board.updateElement(id, patch)) count++;
     }
     return count;
+  }
+
+  // --- clipboard (copy / paste) ---
+
+  /**
+   * Serializes the current selection into a portable {@link ClipboardPayload} — the copied
+   * elements **verbatim** (ids + world coordinates, z-order preserved). Returns `null` when the
+   * selection is empty. The payload is JSON-serializable, so a host can stash it anywhere (system
+   * clipboard, memory) and later {@link paste} it into **this** board or another one.
+   */
+  copySelection(): ClipboardPayload | null {
+    const ids = new Set(this.getSelection());
+    if (ids.size === 0) return null;
+    const elements = this.listElements().filter((el) => ids.has(el.id));
+    if (elements.length === 0) return null;
+    return {
+      type: CLIPBOARD_MARKER,
+      version: CLIPBOARD_VERSION,
+      elements: elements.map(cloneElement),
+    };
+  }
+
+  /**
+   * Pastes a {@link ClipboardPayload} into the board. Every element receives a **fresh id**;
+   * intra-payload connector bindings (`start`/`end`) are **remapped** to the new ids, while
+   * bindings pointing outside the copied set are **dropped** (the connector keeps its shape as a
+   * free line). Board-scoped links that would be meaningless in a copy are cleared: a pasted step
+   * loses its `swimlaneId` (lanes are not copied) and its `subprocessRef`/`subprocessKind` (a
+   * duplicate must not co-own the source's child document — same rule as the on-canvas clone).
+   *
+   * The whole block is offset: onto `at` (its bounding-box **center** lands there — e.g. the
+   * viewport center for `Ctrl+V`) or by a fixed diagonal **nudge** (in-place duplicate, `Ctrl+D`).
+   * Because every element shifts by the same delta, bound connectors stay visually attached without
+   * a re-route. All inserts run in a **single transaction** (one undo step). Selects the pasted
+   * elements and returns their new ids in paste order.
+   */
+  paste(payload: ClipboardPayload, options: { at?: Point } = {}): string[] {
+    const src = payload.elements;
+    if (src.length === 0) return [];
+    // Fresh id per element, computed BEFORE rebuilding so connector bindings can be remapped.
+    const idMap = new Map<string, string>();
+    for (const el of src) idMap.set(el.id, newId(el.kind));
+    // Offset: center the block onto `at`, else nudge it so the copy does not land exactly on top.
+    const box = unionBounds(src.map(elementBounds));
+    const at = options.at;
+    const dx = at && box ? at.x - (box.x + box.width / 2) : PASTE_NUDGE;
+    const dy = at && box ? at.y - (box.y + box.height / 2) : PASTE_NUDGE;
+    const newIds: string[] = [];
+    this.board.transact(() => {
+      for (const el of src) {
+        newIds.push(this.board.addElement(pasteElement(el, idMap, dx, dy)).id);
+      }
+    });
+    this.select(newIds);
+    return newIds;
   }
 
   // --- bound connectors ---
