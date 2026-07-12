@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   applyAwarenessUpdate,
@@ -7,6 +7,7 @@ import {
   encodeAwarenessUpdate,
 } from './crdt/index.js';
 import { createEngine, type WhiteboardEngine } from './engine.js';
+import { createMemoryClipboard } from './clipboard.js';
 import { publishCursor, publishIdentity } from './presence.js';
 import { BoardCanvas } from './board-canvas.js';
 
@@ -535,5 +536,53 @@ describe('BoardCanvas — sub-process', () => {
       clientY: 40,
     });
     expect(getByRole('textbox')).toBeInTheDocument();
+  });
+});
+
+describe('BoardCanvas — copy / paste keyboard shortcuts', () => {
+  function setupClipboard() {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(
+      { kind: 'rectangle', id: 'a', x: 0, y: 0, width: 100, height: 60 },
+      { select: false },
+    );
+    engine.select(['a']);
+    const clipboard = createMemoryClipboard();
+    const utils = render(
+      <BoardCanvas engine={engine} width={400} height={300} clipboard={clipboard} />,
+    );
+    const canvas = utils.getByLabelText('Surface de dessin du whiteboard');
+    return { engine, clipboard, canvas };
+  }
+
+  it('Ctrl+C then Ctrl+V pastes a fresh copy and selects it', async () => {
+    const { engine, canvas } = setupClipboard();
+    fireEvent.keyDown(canvas, { key: 'c', ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: 'v', ctrlKey: true });
+    await waitFor(() => expect(engine.board.size).toBe(2)); // paste read is async
+    const pasted = engine.getSelection();
+    expect(pasted).toHaveLength(1);
+    expect(pasted[0]).not.toBe('a');
+  });
+
+  it('Ctrl+D duplicates the selection in place', () => {
+    const { engine, canvas } = setupClipboard();
+    fireEvent.keyDown(canvas, { key: 'd', ctrlKey: true });
+    expect(engine.board.size).toBe(2);
+    expect(engine.getSelection()[0]).not.toBe('a');
+  });
+
+  it('Ctrl+X cuts (removes + stashes) then Ctrl+V pastes it back', async () => {
+    const { engine, canvas } = setupClipboard();
+    fireEvent.keyDown(canvas, { key: 'x', ctrlKey: true });
+    expect(engine.board.size).toBe(0); // removed
+    fireEvent.keyDown(canvas, { key: 'v', ctrlKey: true });
+    await waitFor(() => expect(engine.board.size).toBe(1)); // pasted back
+  });
+
+  it('the Meta (⌘) modifier works too', () => {
+    const { engine, canvas } = setupClipboard();
+    fireEvent.keyDown(canvas, { key: 'd', metaKey: true });
+    expect(engine.board.size).toBe(2);
   });
 });

@@ -12,6 +12,7 @@ import {
   panBy,
   screenToWorld,
   worldToScreen,
+  viewportCenter,
   zoomAt,
   IDENTITY_VIEWPORT,
   type Point,
@@ -20,6 +21,7 @@ import {
 } from './viewport.js';
 import { snapMove } from './snap.js';
 import { connectorElbow } from './connector.js';
+import { createMemoryClipboard, type WhiteboardClipboard } from './clipboard.js';
 import type { BoundingBox, WhiteboardEngine } from './engine.js';
 import type { WhiteboardElement } from './scene.js';
 import type { CrdtAwareness } from './crdt/index.js';
@@ -84,7 +86,21 @@ export interface BoardCanvasProps {
   /** Receives the zoom actions once available (and again when they change, e.g. on canvas resize),
    *  so a host can drive an external {@link ZoomControl}. */
   readonly onZoomApi?: (api: ZoomApi) => void;
+  /**
+   * Storage medium for copy/paste (`Ctrl/⌘+C`/`X`/`V`). Injected by the host to back the clipboard
+   * with the **system clipboard** (`navigator.clipboard`, works across tabs) — see
+   * {@link WhiteboardClipboard}. Omitted → a shared **in-memory** clipboard: copy/paste works within
+   * the same page (across boards) but not across tabs.
+   */
+  readonly clipboard?: WhiteboardClipboard;
 }
+
+/**
+ * Default clipboard when the host injects none. **Module-level** (shared by every `BoardCanvas` on
+ * the page) so a copy in one board pastes into another opened in the same SPA. Never crosses tabs
+ * (a host wires a `navigator.clipboard` adapter for that).
+ */
+const sharedMemoryClipboard = createMemoryClipboard();
 
 /** Snapping threshold, in screen pixels (converted to world units via the zoom). */
 const SNAP_SCREEN_THRESHOLD = 6;
@@ -331,6 +347,7 @@ export function BoardCanvas({
   onViewportChange,
   hideZoomControl,
   onZoomApi,
+  clipboard = sharedMemoryClipboard,
 }: BoardCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -1326,6 +1343,41 @@ export function BoardCanvas({
     };
   };
 
+  // --- Clipboard (copy / cut / paste / duplicate) ---
+  // Copy/cut serialize the selection into a portable payload (`engine.copySelection`); paste/duplicate
+  // re-id + offset it (`engine.paste`). The store may be async (system clipboard) → fire-and-forget,
+  // redrawing once the read/write settles.
+  const copySelection = (): void => {
+    const payload = engine.copySelection();
+    if (payload) void clipboard.write(payload);
+  };
+  const cutSelection = (): void => {
+    const payload = engine.copySelection();
+    if (!payload) return;
+    void clipboard.write(payload);
+    engine.removeSelected();
+    onChange?.();
+    draw();
+  };
+  const pasteClipboard = (): void => {
+    void Promise.resolve(clipboard.read()).then((payload) => {
+      if (!payload) return;
+      // Paste centered on what the user is currently looking at (visible even after panning away).
+      engine.paste(payload, {
+        at: viewportCenter(vpRef.current, { width: size.w, height: size.h }),
+      });
+      onChange?.();
+      draw();
+    });
+  };
+  const duplicateSelection = (): void => {
+    const payload = engine.copySelection();
+    if (!payload) return;
+    engine.paste(payload); // no anchor → fixed nudge offset next to the source
+    onChange?.();
+    draw();
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLCanvasElement>): void => {
     if ((event.metaKey || event.ctrlKey) && (event.key === 'z' || event.key === 'y')) {
       event.preventDefault();
@@ -1335,6 +1387,17 @@ export function BoardCanvas({
       onChange?.();
       draw();
       return;
+    }
+    if (event.metaKey || event.ctrlKey) {
+      const k = event.key.toLowerCase();
+      if (k === 'c' || k === 'x' || k === 'v' || k === 'd') {
+        event.preventDefault();
+        if (k === 'c') copySelection();
+        else if (k === 'x') cutSelection();
+        else if (k === 'v') pasteClipboard();
+        else duplicateSelection();
+        return;
+      }
     }
     if ((event.key === 'Enter' || event.key === 'F2') && !editing) {
       // Direct editing of the selected element (step → name, text → content).

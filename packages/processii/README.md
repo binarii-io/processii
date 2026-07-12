@@ -300,6 +300,34 @@ step (one drag = a single undo); `observe()` notifies stack changes (`canUndo`/`
 validated boundary. The **contextual style bar** (`StylePanel`, above the element) exposes
 fill/stroke, and — for a text-bearing element — the alignment, format and shadow toggle.
 
+## Copy / paste (clipboard)
+
+Copy-paste of elements, **portable across boards**. The engine owns the domain logic, a host owns
+the storage medium — the two never mix.
+
+- **`engine.copySelection(): ClipboardPayload | null`** serializes the current selection into a
+  self-contained, versioned, JSON-serializable payload (the copied elements **verbatim** — ids +
+  world coordinates, z-order preserved). `null` when the selection is empty. The payload is a
+  **detached snapshot**: later edits to the source board never mutate it.
+- **`engine.paste(payload, { at? })`** inserts the payload: every element gets a **fresh id**;
+  intra-payload connector bindings (`start`/`end`) are **remapped** to the new ids (bindings to
+  elements outside the copied set are **dropped**, leaving a free line); board-scoped links a copy
+  must not carry are cleared — a pasted step loses its `swimlaneId` (lanes are not copied) and its
+  `subprocessRef`/`subprocessKind` (a duplicate must not co-own the source's child document, same
+  rule as the on-canvas clone). The block is offset onto `at` (its bounding-box **center** lands
+  there — e.g. the viewport center for `Ctrl+V`) or by a fixed diagonal **nudge** (in-place
+  duplicate, `Ctrl+D`). All inserts run in a **single transaction** = one undo step; the pasted
+  elements are selected and their new ids returned. `clipboard.ts` (`parseClipboardPayload`,
+  `CLIPBOARD_MARKER`, `CLIPBOARD_VERSION`) is DOM-free and re-exported from `./core`.
+
+**Storage is injected**, so the _format_ stays in the package but the _medium_ is the host's
+choice. `BoardCanvas` takes an optional **`clipboard: WhiteboardClipboard`** (`write(payload)` /
+`read()`, both may be async) and wires the shortcuts **`Ctrl/⌘+C`** (copy), **`X`** (cut), **`V`**
+(paste at the viewport center), **`D`** (duplicate in place). Omit the prop → a shared **in-memory**
+default: copy-paste works within the same page (across boards navigated in one SPA) but not across
+tabs. A host backs it with the **system clipboard** (`navigator.clipboard` + a payload marker) to
+get cross-tab / cross-app paste. `createMemoryClipboard()` is exported for hosts and tests.
+
 ## Bound connectors & sticky notes
 
 `engine.connect(id, startId, endId)` creates a **bound arrow**: its native `start`/`end` fields
@@ -642,6 +670,8 @@ import {
   useBoardBackground,
   BOARD_BACKGROUNDS,
   BOARD_TYPE_META, // headless chrome (compose your own toolbar/pickers)
+  parseClipboardPayload,
+  createMemoryClipboard, // copy/paste (portable payloads + injectable storage)
 } from '@binarii/processii';
 
 const engine = createEngine(); // offline, ready

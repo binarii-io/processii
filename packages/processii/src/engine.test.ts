@@ -148,3 +148,152 @@ describe('engine — geometry & rendering', () => {
     off();
   });
 });
+
+describe('engine — clipboard (copy / paste)', () => {
+  /** Raw arrow bound `start` → `end` (points required by the schema). */
+  function arrow(id: string, start?: string, end?: string): unknown {
+    return {
+      kind: 'arrow',
+      id,
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      points: [
+        [0, 0],
+        [10, 10],
+      ],
+      ...(start ? { start } : {}),
+      ...(end ? { end } : {}),
+    };
+  }
+
+  it('copySelection returns null when nothing is selected', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(rect('a'));
+    engine.clearSelection();
+    expect(engine.copySelection()).toBeNull();
+  });
+
+  it('copySelection captures only the selected elements (marker + version)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(rect('a'), { select: false });
+    engine.addElement(rect('b'), { select: false });
+    engine.select(['a']);
+    const payload = engine.copySelection();
+    expect(payload?.type).toBe('processii/clipboard');
+    expect(payload?.version).toBe(1);
+    expect(payload?.elements.map((e) => e.id)).toEqual(['a']);
+  });
+
+  it('copySelection is a detached snapshot (later source edits do not mutate it)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(rect('a', 5, 5));
+    const payload = engine.copySelection()!;
+    engine.moveElement('a', 100, 0);
+    expect(payload.elements[0]).toMatchObject({ x: 5, y: 5 });
+  });
+
+  it('paste creates fresh ids, nudges the block, and selects the copies', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(rect('a', 0, 0));
+    const payload = engine.copySelection()!;
+    const ids = engine.paste(payload);
+    expect(ids).toHaveLength(1);
+    expect(ids[0]).not.toBe('a');
+    expect(engine.board.size).toBe(2);
+    expect(engine.getSelection()).toEqual(ids);
+    // Default nudge (no anchor): copy offset diagonally from the source.
+    expect(engine.board.getElement(ids[0]!)).toMatchObject({ x: 16, y: 16 });
+  });
+
+  it('paste at an anchor centers the block bounding box on it', () => {
+    const engine = createEngine({ clientId: 1 });
+    // A 10×10 rect at origin → center (5,5). Pasting centered on (100,100) offsets by (95,95).
+    engine.addElement(rect('a', 0, 0));
+    const payload = engine.copySelection()!;
+    const [id] = engine.paste(payload, { at: { x: 100, y: 100 } });
+    expect(engine.board.getElement(id!)).toMatchObject({ x: 95, y: 95 });
+  });
+
+  it('paste remaps a connector binding to the pasted copies (both endpoints copied)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(rect('a', 0, 0), { select: false });
+    engine.addElement(rect('b', 200, 0), { select: false });
+    engine.addElement(arrow('arr', 'a', 'b'), { select: false });
+    engine.select(['a', 'b', 'arr']);
+    const payload = engine.copySelection()!;
+    const ids = engine.paste(payload);
+    const pastedArrow = ids
+      .map((id) => engine.board.getElement(id)!)
+      .find((el) => el.kind === 'arrow')!;
+    // Re-pointed to the NEW element ids, never the originals.
+    expect(pastedArrow).toMatchObject({ kind: 'arrow' });
+    if (pastedArrow.kind === 'arrow') {
+      expect(pastedArrow.start).toBeDefined();
+      expect(pastedArrow.end).toBeDefined();
+      expect(ids).toContain(pastedArrow.start);
+      expect(ids).toContain(pastedArrow.end);
+      expect(pastedArrow.start).not.toBe('a');
+      expect(pastedArrow.end).not.toBe('b');
+    }
+  });
+
+  it('paste drops a connector binding whose target was not copied', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(rect('a', 0, 0), { select: false });
+    engine.addElement(rect('b', 200, 0), { select: false });
+    engine.addElement(arrow('arr', 'a', 'b'), { select: false });
+    engine.select(['arr']); // only the connector, not its endpoints
+    const [id] = engine.paste(engine.copySelection()!);
+    const pasted = engine.board.getElement(id!)!;
+    if (pasted.kind === 'arrow') {
+      expect(pasted.start).toBeUndefined();
+      expect(pasted.end).toBeUndefined();
+    }
+  });
+
+  it('paste clears a step lane membership and sub-process link', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement({
+      kind: 'step',
+      id: 's',
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 50,
+      swimlaneId: 'lane1',
+      subprocessRef: 'doc-x',
+      subprocessKind: 'external',
+    });
+    const [id] = engine.paste(engine.copySelection()!);
+    const pasted = engine.board.getElement(id!)!;
+    if (pasted.kind === 'step') {
+      expect(pasted.swimlaneId).toBeUndefined();
+      expect(pasted.subprocessRef).toBeUndefined();
+      expect(pasted.subprocessKind).toBeUndefined();
+    }
+  });
+
+  it('paste is a single undo step (all copies revert at once)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(rect('a', 0, 0), { select: false });
+    engine.addElement(rect('b', 50, 0), { select: false });
+    engine.select(['a', 'b']);
+    const history = engine.history(); // undo manager must exist before the paste transaction
+    engine.paste(engine.copySelection()!);
+    expect(engine.board.size).toBe(4);
+    history.undo();
+    expect(engine.board.size).toBe(2);
+  });
+
+  it('a payload pastes into another board (inter-board copy)', () => {
+    const source = createEngine({ clientId: 1 });
+    source.addElement(rect('a', 0, 0));
+    const payload = source.copySelection()!;
+    const target = createEngine({ clientId: 2 });
+    const ids = target.paste(payload);
+    expect(target.board.size).toBe(1);
+    expect(target.getSelection()).toEqual(ids);
+  });
+});
