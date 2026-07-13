@@ -56,6 +56,12 @@ export interface WhiteboardEditorProps {
    * See {@link WhiteboardClipboard}.
    */
   readonly clipboard?: WhiteboardClipboard;
+  /**
+   * Right-click on the surface → the host renders its own context menu (z-order, copy/paste…).
+   * Forwarded to `BoardCanvas`; omit to keep the browser's default menu. See
+   * {@link BoardCanvasProps.onContextMenu}.
+   */
+  readonly onContextMenu?: (at: Point, ids: string[]) => void;
   /** Class of the full-frame container (positioning by the host app). */
   readonly className?: string;
 }
@@ -81,6 +87,7 @@ export function WhiteboardEditor({
   onNavigateSubprocess,
   resolveSubprocessLabel,
   clipboard,
+  onContextMenu,
   className,
 }: WhiteboardEditorProps) {
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
@@ -149,6 +156,7 @@ export function WhiteboardEditor({
           onZoomApi={handleZoomApi}
           {...(onNavigateSubprocess ? { onNavigateSubprocess } : {})}
           {...(clipboard ? { clipboard } : {})}
+          {...(onContextMenu ? { onContextMenu } : {})}
         />
       </div>
 
