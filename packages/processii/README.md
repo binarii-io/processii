@@ -178,10 +178,14 @@ rest of the core, both modules are **pure and DOM-free** → tested without a br
 `handles.ts` places, for a **box-shaped** element (rect/ellipse/text), 8 resize handles + 1
 rotation handle (`elementHandles`), hit-tests them (`handleAtPoint`) and computes the new state:
 `resizeElement` keeps the opposite edge **fixed in the world** (correct even for a rotated
-element), `rotateElement` returns the angle (optional 15° snapping via `snapStep`).
-`snap.ts` (`snapMove`) snaps a moving box onto the **edges and centers** of the other elements
-under a threshold and returns the `(dx, dy)` correction + the guide lines. `renderToCanvas`
-draws the handles (**single** selection) and the guides. Pure, tested modules.
+element), `rotateElement` returns the angle (optional 15° snapping via `snapStep`). The hit-test
+grabs each **edge along its whole length** (an `EDGE_GRAB_SCREEN` px band, corners taking
+precedence), not only the small square drawn at its midpoint — so resizing from the border is
+intuitive while the connection dot on top of the midpoint keeps creating linked items.
+`snap.ts` snaps a moving box (`snapMove`) **or the dragged edges of a resized box** (`snapResize`)
+onto the **edges and centers** of the other elements under a threshold, returning the correction
+(`(dx, dy)` for a move, the adjusted box for a resize) + the guide lines. `renderToCanvas` draws
+the handles (**single** selection) and the guides. Pure, tested modules.
 
 ## Process board (process model)
 

@@ -56,6 +56,46 @@ describe('handles — hit-test', () => {
     expect(rotate).toBeDefined();
     expect(handleAtPoint(r, { x: rotate!.x, y: rotate!.y }, 1)).toBe('rotate');
   });
+
+  it('grabs the whole edge, not only its midpoint square', () => {
+    const r = box(); // 100x60 at (0,0)
+    // Top edge (y=0) grabbed all along, far from the midpoint square at x=50.
+    expect(handleAtPoint(r, { x: 10, y: 0 }, 1)).toBe('n');
+    expect(handleAtPoint(r, { x: 90, y: 0 }, 1)).toBe('n');
+    // Bottom / left / right edges too.
+    expect(handleAtPoint(r, { x: 75, y: 60 }, 1)).toBe('s');
+    expect(handleAtPoint(r, { x: 0, y: 12 }, 1)).toBe('w');
+    expect(handleAtPoint(r, { x: 100, y: 48 }, 1)).toBe('e');
+  });
+
+  it('corners take precedence over the edges', () => {
+    const r = box();
+    expect(handleAtPoint(r, { x: 0, y: 0 }, 1)).toBe('nw');
+    expect(handleAtPoint(r, { x: 100, y: 0 }, 1)).toBe('ne');
+    expect(handleAtPoint(r, { x: 0, y: 60 }, 1)).toBe('sw');
+    expect(handleAtPoint(r, { x: 100, y: 60 }, 1)).toBe('se');
+  });
+
+  it('the edge grab band has a limited thickness (interior stays free to move)', () => {
+    const r = box();
+    expect(handleAtPoint(r, { x: 20, y: 5 }, 1)).toBe('n'); // 5px inside the top edge → still grabs
+    expect(handleAtPoint(r, { x: 20, y: 8 }, 1)).toBeUndefined(); // 8px in → interior (move)
+    expect(handleAtPoint(r, { x: 50, y: 30 }, 1)).toBeUndefined(); // center → move
+  });
+
+  it('the band scales with the zoom (screen-constant)', () => {
+    const r = box();
+    // At zoom 2, the 6px screen band is 3 world units → 4px inside is out of the band.
+    expect(handleAtPoint(r, { x: 20, y: 4 }, 2)).toBeUndefined();
+    expect(handleAtPoint(r, { x: 20, y: 2 }, 2)).toBe('n');
+  });
+
+  it('grabs the edges in the local frame of a rotated box', () => {
+    const r = box({ angle: Math.PI / 2 });
+    // World position of the east-edge midpoint (already rotated) → still detected as 'e'.
+    const east = elementHandles(r).find((h) => h.kind === 'e')!;
+    expect(handleAtPoint(r, { x: east.x, y: east.y }, 1)).toBe('e');
+  });
 });
 
 describe('handles — redimensionnement', () => {

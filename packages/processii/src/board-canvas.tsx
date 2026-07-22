@@ -5,6 +5,7 @@ import {
   hasHandles,
   resizeElement,
   rotateElement,
+  MIN_ELEMENT_SIZE,
   type HandleKind,
 } from './handles.js';
 import { isColorToken, renderToCanvas, type CanvasLike } from './render.js';
@@ -19,7 +20,7 @@ import {
   type Size,
   type Viewport,
 } from './viewport.js';
-import { snapMove } from './snap.js';
+import { snapMove, snapResize } from './snap.js';
 import { connectorElbow } from './connector.js';
 import { createMemoryClipboard, type WhiteboardClipboard } from './clipboard.js';
 import type { BoundingBox, WhiteboardEngine } from './engine.js';
@@ -150,6 +151,8 @@ type Interaction =
       readonly mode: 'resizing';
       readonly id: string;
       readonly handle: Exclude<HandleKind, 'rotate'>;
+      // Snap targets (other elements + swimlanes), captured once at the start of the gesture.
+      readonly otherBounds: readonly BoundingBox[];
     }
   | { readonly mode: 'rotating'; readonly id: string }
   | { readonly mode: 'laneResizeH'; readonly laneId: string }
@@ -816,7 +819,7 @@ export function BoardCanvas({
           return;
         }
         if (handle) {
-          interaction.current = { mode: 'resizing', id, handle };
+          interaction.current = { mode: 'resizing', id, handle, otherBounds: snapTargets() };
           return;
         }
       }
@@ -959,8 +962,41 @@ export function BoardCanvas({
     if (state.mode === 'resizing') {
       const el = engine.board.getElement(state.id);
       if (el) {
-        engine.updateElement(state.id, resizeElement(el, state.handle, world));
+        const resized = resizeElement(el, state.handle, world);
+        // Align the dragged edge(s) onto the other elements' edges/centers, drawing the same guides
+        // as a move. Axis-aligned boxes only: a rotated box has no horizontal/vertical edge to align.
+        if (el.angle === 0) {
+          const snapped = snapResize(
+            resized,
+            {
+              left: state.handle.includes('w'),
+              right: state.handle.includes('e'),
+              top: state.handle.includes('n'),
+              bottom: state.handle.includes('s'),
+            },
+            state.otherBounds,
+            SNAP_SCREEN_THRESHOLD / vpRef.current.zoom,
+            MIN_ELEMENT_SIZE,
+          );
+          engine.updateElement(state.id, {
+            x: snapped.x,
+            y: snapped.y,
+            width: snapped.width,
+            height: snapped.height,
+          });
+          guides.current =
+            snapped.guideX !== undefined || snapped.guideY !== undefined
+              ? {
+                  ...(snapped.guideX !== undefined ? { x: snapped.guideX } : {}),
+                  ...(snapped.guideY !== undefined ? { y: snapped.guideY } : {}),
+                }
+              : undefined;
+        } else {
+          engine.updateElement(state.id, resized);
+          guides.current = undefined;
+        }
         engine.refreshConnectors();
+        draw();
       }
       return;
     }

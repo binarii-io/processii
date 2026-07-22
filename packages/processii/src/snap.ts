@@ -70,3 +70,95 @@ export function snapMove(
     ...(snapY ? { guideY: snapY.target } : {}),
   };
 }
+
+/** Which sides a resize handle drags. Only the flagged edges move; the opposite ones stay fixed. */
+export interface ResizeEdges {
+  readonly left?: boolean;
+  readonly right?: boolean;
+  readonly top?: boolean;
+  readonly bottom?: boolean;
+}
+
+/** Adjusted box after resize snapping, plus the guide line(s) to draw. */
+export interface ResizeSnapResult {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  /** World abscissa of the vertical guide line (when the dragged vertical edge snapped). */
+  readonly guideX?: number;
+  /** World ordinate of the horizontal guide line (when the dragged horizontal edge snapped). */
+  readonly guideY?: number;
+}
+
+/**
+ * Snaps the **dragged edges** of a box being resized onto the edges/centers of `others` — the
+ * alignment counterpart of {@link snapMove} for resizing. `edges` says which sides the active
+ * handle moves (dragging the east handle → `{ right: true }`, the south-east corner →
+ * `{ right, bottom }`). Only those edges move (the opposite edge stays fixed), so the correction
+ * changes the **size**, not just the position. A snap that would shrink the box below `minSize`
+ * is skipped. Returns the adjusted box plus the guide line(s). **Axis-aligned boxes only** — the
+ * caller skips rotated elements. No-op when nothing is within `threshold`.
+ */
+export function snapResize(
+  box: BoundingBox,
+  edges: ResizeEdges,
+  others: readonly BoundingBox[],
+  threshold: number,
+  minSize = 0,
+): ResizeSnapResult {
+  if (others.length === 0 || threshold <= 0) {
+    return { x: box.x, y: box.y, width: box.width, height: box.height };
+  }
+  const staticX: number[] = [];
+  const staticY: number[] = [];
+  for (const o of others) {
+    staticX.push(...axisLines(o.x, o.width));
+    staticY.push(...axisLines(o.y, o.height));
+  }
+
+  let { x, y, width, height } = box;
+  let guideX: number | undefined;
+  let guideY: number | undefined;
+
+  // Horizontal axis: a handle drags at most one of left/right.
+  if (edges.left) {
+    const s = bestSnap([x], staticX, threshold);
+    if (s && x + width - s.target >= minSize) {
+      width = x + width - s.target;
+      x = s.target;
+      guideX = s.target;
+    }
+  } else if (edges.right) {
+    const s = bestSnap([x + width], staticX, threshold);
+    if (s && s.target - x >= minSize) {
+      width = s.target - x;
+      guideX = s.target;
+    }
+  }
+
+  // Vertical axis: a handle drags at most one of top/bottom.
+  if (edges.top) {
+    const s = bestSnap([y], staticY, threshold);
+    if (s && y + height - s.target >= minSize) {
+      height = y + height - s.target;
+      y = s.target;
+      guideY = s.target;
+    }
+  } else if (edges.bottom) {
+    const s = bestSnap([y + height], staticY, threshold);
+    if (s && s.target - y >= minSize) {
+      height = s.target - y;
+      guideY = s.target;
+    }
+  }
+
+  return {
+    x,
+    y,
+    width,
+    height,
+    ...(guideX !== undefined ? { guideX } : {}),
+    ...(guideY !== undefined ? { guideY } : {}),
+  };
+}
