@@ -25,6 +25,13 @@ export interface Handle {
 
 /** Size (screen px) of a handle square — used for drawing and for the click area. */
 export const HANDLE_SCREEN_SIZE = 8;
+/**
+ * Perpendicular thickness (screen px) of the grab band along **the whole edge** of a box. The
+ * entire border resizes (top/bottom → height, left/right → width), not only the small square drawn
+ * at the edge midpoint — so grabbing an edge is intuitive. Corners keep priority (both axes), and
+ * the connection dot rendered on top of the midpoint keeps creating linked items.
+ */
+export const EDGE_GRAB_SCREEN = 6;
 /** Distance (screen px) of the rotation handle above the top edge. */
 export const ROTATE_HANDLE_OFFSET = 22;
 /** Minimum size (world units) of a resized element — avoids degenerate boxes. */
@@ -81,19 +88,50 @@ export function elementHandles(element: WhiteboardElement, zoom = 1): Handle[] {
 }
 
 /**
- * Handle under the world point `p`, or `undefined`. The click area is `HANDLE_SCREEN_SIZE` px on
- * screen (hence divided by the zoom in world units). Rotation is tested slightly more broadly.
+ * Handle under the world point `p`, or `undefined`. Corners and the rotation knob keep a small
+ * square catch area (`HANDLE_SCREEN_SIZE` px on screen, divided by the zoom in world units); the
+ * four **edges** are grabbed along their **whole length** within a `EDGE_GRAB_SCREEN` px band, so
+ * the entire border resizes (not only the square drawn at the midpoint). Everything is tested in
+ * the element's local (unrotated) frame, so a rotated box keeps axis-aligned edge grabs.
  */
 export function handleAtPoint(
   element: WhiteboardElement,
   p: Point,
   zoom = 1,
 ): HandleKind | undefined {
-  const tolerance = HANDLE_SCREEN_SIZE / zoom;
-  for (const handle of elementHandles(element, zoom)) {
-    const reach = handle.kind === 'rotate' ? tolerance : tolerance / 2 + 1 / zoom;
-    if (Math.abs(p.x - handle.x) <= reach && Math.abs(p.y - handle.y) <= reach) return handle.kind;
-  }
+  if (!hasHandles(element)) return undefined;
+  const c = center(element);
+  const { x, y, width: w, height: h } = element;
+
+  // Rotation knob: small square above the top-center (tested in world coordinates).
+  const rotReach = HANDLE_SCREEN_SIZE / zoom;
+  const rot = rotateAround({ x: x + w / 2, y: y - ROTATE_HANDLE_OFFSET / zoom }, c, element.angle);
+  if (Math.abs(p.x - rot.x) <= rotReach && Math.abs(p.y - rot.y) <= rotReach) return 'rotate';
+
+  // Corners + edges: bring the pointer back into the element's local (unrotated) frame so the box
+  // is axis-aligned and the edges are horizontal/vertical.
+  const local = rotateAround(p, c, -element.angle);
+  const band = EDGE_GRAB_SCREEN / zoom;
+  const left = x;
+  const right = x + w;
+  const top = y;
+  const bottom = y + h;
+  const nearLeft = Math.abs(local.x - left) <= band;
+  const nearRight = Math.abs(local.x - right) <= band;
+  const nearTop = Math.abs(local.y - top) <= band;
+  const nearBottom = Math.abs(local.y - bottom) <= band;
+  const withinX = local.x >= left - band && local.x <= right + band;
+  const withinY = local.y >= top - band && local.y <= bottom + band;
+
+  // Corners first (resize on both axes), then the full-length edges.
+  if (nearTop && nearLeft) return 'nw';
+  if (nearTop && nearRight) return 'ne';
+  if (nearBottom && nearRight) return 'se';
+  if (nearBottom && nearLeft) return 'sw';
+  if (nearTop && withinX) return 'n';
+  if (nearBottom && withinX) return 's';
+  if (nearLeft && withinY) return 'w';
+  if (nearRight && withinY) return 'e';
   return undefined;
 }
 

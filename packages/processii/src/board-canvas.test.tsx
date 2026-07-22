@@ -157,6 +157,33 @@ describe('BoardCanvas — handles (single selection)', () => {
     fireEvent.pointerUp(canvas, { clientX: 200, clientY: 30, button: 0, pointerId: 1 });
     expect(engine.board.getElement('a')?.angle).toBeCloseTo(Math.PI / 2, 5);
   });
+
+  it('grabbing anywhere along an edge resizes (whole border, not only the midpoint)', () => {
+    const { engine, canvas } = setup((e) => {
+      e.addElement({ kind: 'rectangle', id: 'a', x: 0, y: 0, width: 100, height: 60 });
+    });
+    // Bottom edge, far from its midpoint square (x=50) → old code would have moved, not resized.
+    fireEvent.pointerDown(canvas, { clientX: 20, clientY: 60, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(canvas, { clientX: 20, clientY: 120, button: 0, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 20, clientY: 120, button: 0, pointerId: 1 });
+    expect(engine.board.getElement('a')).toMatchObject({ x: 0, y: 0, width: 100, height: 120 });
+  });
+
+  it('resizing snaps the dragged edge onto a neighbor edge', () => {
+    const { engine, canvas } = setup((e) => {
+      // Neighbor first (unselected), then the resized rectangle (selected by default).
+      e.addElement(
+        { kind: 'rectangle', id: 'b', x: 150, y: 0, width: 50, height: 60 },
+        { select: false },
+      );
+      e.addElement({ kind: 'rectangle', id: 'a', x: 0, y: 0, width: 100, height: 60 });
+    });
+    // Drag a's east edge to x=147; b's left edge (150) is within 6px → snaps to 150.
+    fireEvent.pointerDown(canvas, { clientX: 100, clientY: 30, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(canvas, { clientX: 147, clientY: 30, button: 0, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 147, clientY: 30, button: 0, pointerId: 1 });
+    expect(engine.board.getElement('a')?.width).toBe(150);
+  });
 });
 
 describe('BoardCanvas — in-place text editing', () => {
