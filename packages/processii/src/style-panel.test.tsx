@@ -130,4 +130,33 @@ describe('StylePanel — selection styles', () => {
     const { queryByLabelText } = render(<StylePanel engine={engine} />);
     expect(queryByLabelText('Flèche à la fin')).toBeNull();
   });
+
+  it('sets and clears a link via the contextual Link panel (#266)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement({ kind: 'rectangle', id: 'a', x: 0, y: 0, width: 50, height: 50 });
+    const { getByLabelText } = render(<StylePanel engine={engine} />);
+    fireEvent.click(getByLabelText('Lien')); // opens the link sub-panel
+    fireEvent.change(getByLabelText('Lien (URL)'), { target: { value: 'example.com' } });
+    expect(engine.board.getElement('a')).toMatchObject({ url: 'example.com' });
+    fireEvent.change(getByLabelText('Lien (URL)'), { target: { value: '' } });
+    expect(engine.board.getElement('a')).not.toHaveProperty('url');
+  });
+
+  it('the Link button is not offered for a connector', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement({
+      kind: 'arrow',
+      id: 'l',
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      points: [
+        [0, 0],
+        [10, 10],
+      ],
+    });
+    const { queryByLabelText } = render(<StylePanel engine={engine} />);
+    expect(queryByLabelText('Lien')).toBeNull();
+  });
 });

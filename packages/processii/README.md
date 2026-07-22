@@ -211,8 +211,10 @@ host's `onOpenLink?: (href) => void`, or a new tab by default. The badge hit-tes
 runs **after** the resize handles (a selected item still resizes from its corner) and before the
 element hit-test. The href is scheme-guarded by `safeLinkHref` (bare host → `https://`,
 `http`/`https`/`mailto`/relative pass through, any other scheme refused), so a link can never smuggle
-`javascript:`/`data:` execution. The **editing** UI is the host's (a `SidePanel` field and/or a
-toolbar action); `PANEL_ELEMENT_KINDS`/`isPanelElementKind` let a host gate it.
+`javascript:`/`data:` execution. **Editing**: a **link button in the contextual `StylePanel`** (the
+floating style bar above a selected item — built-in, for box-like items) opens a URL sub-panel
+(input + open/remove); a host may also expose a `SidePanel` field. `PANEL_ELEMENT_KINDS`/
+`isPanelElementKind` let a host gate it.
 
 ## Process board (process model)
 
