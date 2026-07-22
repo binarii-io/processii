@@ -148,9 +148,10 @@ describe('safeLinkHref (#266) — scheme guard', () => {
   it('passes a host-relative deep link through', () => {
     expect(safeLinkHref('/docs/42')).toBe('/docs/42');
   });
-  it('refuses a dangerous scheme and empty input', () => {
+  it('refuses a dangerous scheme, a protocol-relative url and empty input', () => {
     expect(safeLinkHref('javascript:alert(1)')).toBeNull();
     expect(safeLinkHref('data:text/html,x')).toBeNull();
+    expect(safeLinkHref('//evil.example')).toBeNull(); // protocol-relative → open-redirect vector
     expect(safeLinkHref('   ')).toBeNull();
   });
 });

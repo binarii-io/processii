@@ -128,7 +128,8 @@ function LinkField({
           aria-label="Lien (URL)"
           onChange={(e) => {
             const v = e.target.value;
-            onChange(v.trim() === '' ? null : v);
+            const trimmed = v.trim();
+            onChange(trimmed === '' ? null : trimmed);
           }}
         />
         <Button

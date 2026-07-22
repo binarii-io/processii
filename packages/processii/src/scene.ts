@@ -431,6 +431,9 @@ export function parseScene(input: unknown): Scene {
 export function safeLinkHref(raw: string): string | null {
   const v = raw.trim();
   if (!v) return null;
+  // Protocol-relative (`//host`) → refuse: it inherits the page scheme and would be an open-redirect
+  // vector if a host routes `onOpenLink` in-app. A single leading `/` is a genuine host-relative path.
+  if (v.startsWith('//')) return null;
   if (v.startsWith('/')) return v;
   if (/^(https?:|mailto:)/i.test(v)) return v;
   if (/^[a-z][a-z0-9+.-]*:/i.test(v)) return null;

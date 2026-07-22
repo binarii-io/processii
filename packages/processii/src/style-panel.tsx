@@ -445,7 +445,8 @@ function LinkSubPanel({
         onChange={(e) => {
           const v = e.target.value;
           setValue(v);
-          onSave(v.trim() === '' ? null : v);
+          const trimmed = v.trim();
+          onSave(trimmed === '' ? null : trimmed);
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
