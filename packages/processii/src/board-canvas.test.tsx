@@ -671,3 +671,163 @@ describe('BoardCanvas — right-click context menu', () => {
     expect(onContextMenu).toHaveBeenCalledWith({ x: 50, y: 30 }, ['a', 'b']);
   });
 });
+
+describe('BoardCanvas — arrow-key nudge (#264)', () => {
+  it('an arrow key moves the selection by 1 world px', () => {
+    const { engine, canvas } = setup((e) => {
+      e.addElement({ kind: 'rectangle', id: 'a', x: 40, y: 40, width: 50, height: 50 });
+    });
+    fireEvent.keyDown(canvas, { key: 'ArrowRight' });
+    expect(engine.board.getElement('a')).toMatchObject({ x: 41, y: 40 });
+    fireEvent.keyDown(canvas, { key: 'ArrowUp' });
+    expect(engine.board.getElement('a')).toMatchObject({ x: 41, y: 39 });
+  });
+
+  it('Shift+arrow moves by 10 world px', () => {
+    const { engine, canvas } = setup((e) => {
+      e.addElement({ kind: 'rectangle', id: 'a', x: 40, y: 40, width: 50, height: 50 });
+    });
+    fireEvent.keyDown(canvas, { key: 'ArrowDown', shiftKey: true });
+    fireEvent.keyDown(canvas, { key: 'ArrowLeft', shiftKey: true });
+    expect(engine.board.getElement('a')).toMatchObject({ x: 30, y: 50 });
+  });
+
+  it('moves every element of a multi-selection together', () => {
+    const { engine, canvas } = setup((e) => {
+      e.addElement(
+        { kind: 'rectangle', id: 'a', x: 0, y: 0, width: 20, height: 20 },
+        { select: false },
+      );
+      e.addElement(
+        { kind: 'rectangle', id: 'b', x: 100, y: 0, width: 20, height: 20 },
+        { select: false },
+      );
+      e.select(['a', 'b']);
+    });
+    fireEvent.keyDown(canvas, { key: 'ArrowRight', shiftKey: true });
+    expect(engine.board.getElement('a')).toMatchObject({ x: 10 });
+    expect(engine.board.getElement('b')).toMatchObject({ x: 110 });
+  });
+
+  it('does nothing without a selection', () => {
+    const { engine, canvas } = setup((e) => {
+      e.addElement(
+        { kind: 'rectangle', id: 'a', x: 40, y: 40, width: 50, height: 50 },
+        { select: false },
+      );
+    });
+    fireEvent.keyDown(canvas, { key: 'ArrowRight' });
+    expect(engine.board.getElement('a')).toMatchObject({ x: 40, y: 40 });
+  });
+
+  it('leaves Ctrl/Cmd+arrow to the browser (no nudge)', () => {
+    const { engine, canvas } = setup((e) => {
+      e.addElement({ kind: 'rectangle', id: 'a', x: 40, y: 40, width: 50, height: 50 });
+    });
+    fireEvent.keyDown(canvas, { key: 'ArrowRight', ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: 'ArrowRight', metaKey: true });
+    expect(engine.board.getElement('a')).toMatchObject({ x: 40, y: 40 });
+  });
+});
+
+describe('BoardCanvas — Alt-drag clone (#265)', () => {
+  it('duplicates the selection on the first move and drags the copy (original stays)', () => {
+    const { engine, canvas } = setup((e) => {
+      e.addElement({ kind: 'rectangle', id: 'a', x: 0, y: 0, width: 40, height: 40 });
+    });
+    // Grab the element with Alt held, then move: a copy is created and dragged, 'a' stays put.
+    fireEvent.pointerDown(canvas, {
+      clientX: 20,
+      clientY: 20,
+      button: 0,
+      altKey: true,
+      pointerId: 1,
+    });
+    fireEvent.pointerMove(canvas, { clientX: 120, clientY: 20, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 120, clientY: 20, button: 0, pointerId: 1 });
+    expect(engine.board.size).toBe(2);
+    // The original is untouched at its start position.
+    expect(engine.board.getElement('a')).toMatchObject({ x: 0, y: 0 });
+    // The selection is the copy (a fresh id), moved by ~100px.
+    const sel = engine.getSelection();
+    expect(sel).toHaveLength(1);
+    expect(sel[0]).not.toBe('a');
+    expect(engine.board.getElement(sel[0]!)).toMatchObject({ x: 100, y: 0 });
+  });
+
+  it('a plain drag (no Alt) moves the element without cloning', () => {
+    const { engine, canvas } = setup((e) => {
+      e.addElement({ kind: 'rectangle', id: 'a', x: 0, y: 0, width: 40, height: 40 });
+    });
+    fireEvent.pointerDown(canvas, { clientX: 20, clientY: 20, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(canvas, { clientX: 120, clientY: 20, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 120, clientY: 20, button: 0, pointerId: 1 });
+    expect(engine.board.size).toBe(1);
+    expect(engine.board.getElement('a')).toMatchObject({ x: 100, y: 0 });
+  });
+});
+
+describe('BoardCanvas — link badge (#266)', () => {
+  // Badge sits INSIDE the top-right corner: x ∈ [x+w-20, x+w-4], y ∈ [y+4, y+20].
+  it('clicking the badge opens the link (scheme-guarded) without selecting the element', () => {
+    const onOpenLink = vi.fn();
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(
+      { kind: 'rectangle', id: 'a', x: 0, y: 100, width: 100, height: 60, url: 'example.com' },
+      { select: false },
+    );
+    const { getByLabelText } = render(
+      <BoardCanvas engine={engine} width={400} height={300} onOpenLink={onOpenLink} />,
+    );
+    const canvas = getByLabelText('Surface de dessin du whiteboard');
+    // Badge center ≈ (x+w-12, y+12) = (88, 112).
+    fireEvent.pointerDown(canvas, { clientX: 88, clientY: 112, button: 0, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 88, clientY: 112, button: 0, pointerId: 1 });
+    expect(onOpenLink).toHaveBeenCalledWith('https://example.com');
+    expect(engine.getSelection()).toEqual([]); // badge click does not select
+  });
+
+  it('a click on the element body (not the badge) selects normally', () => {
+    const onOpenLink = vi.fn();
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(
+      { kind: 'rectangle', id: 'a', x: 0, y: 100, width: 100, height: 60, url: 'https://x.test' },
+      { select: false },
+    );
+    const { getByLabelText } = render(
+      <BoardCanvas engine={engine} width={400} height={300} onOpenLink={onOpenLink} />,
+    );
+    const canvas = getByLabelText('Surface de dessin du whiteboard');
+    fireEvent.pointerDown(canvas, { clientX: 50, clientY: 130, button: 0, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 50, clientY: 130, button: 0, pointerId: 1 });
+    expect(onOpenLink).not.toHaveBeenCalled();
+    expect(engine.getSelection()).toEqual(['a']);
+  });
+});
+
+describe('BoardCanvas — equal-spacing snap (distribution)', () => {
+  it('snaps a dragged third element to the same gap as the existing pair', () => {
+    const { engine, canvas } = setup((e) => {
+      // A [0..50] and B [100..150] on the same row → gap 50.
+      e.addElement(
+        { kind: 'rectangle', id: 'a', x: 0, y: 0, width: 50, height: 50 },
+        { select: false },
+      );
+      e.addElement(
+        { kind: 'rectangle', id: 'b', x: 100, y: 0, width: 50, height: 50 },
+        { select: false },
+      );
+      e.addElement(
+        { kind: 'rectangle', id: 'd', x: 300, y: 0, width: 50, height: 50 },
+        { select: false },
+      );
+      e.select(['d']);
+    });
+    // Grab D at its center (325,25) and drag so its proposed x ≈ 197 (3px shy of the equal-gap 200).
+    fireEvent.pointerDown(canvas, { clientX: 325, clientY: 25, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(canvas, { clientX: 222, clientY: 25, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: 222, clientY: 25, button: 0, pointerId: 1 });
+    // Snaps to x=200 → gap B→D = 50, same as A→B.
+    expect(engine.board.getElement('d')).toMatchObject({ x: 200, y: 0 });
+  });
+});

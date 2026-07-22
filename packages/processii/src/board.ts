@@ -88,6 +88,8 @@ export type ElementPatch = Partial<{
   strokeDash: 'solid' | 'dashed';
   opacity: number;
   z: number;
+  /** Element hyperlink (external URL / host deep-link); `null` = clear the field. */
+  url: string | null;
   markers: Marker[];
   points: [number, number][];
   text: string;

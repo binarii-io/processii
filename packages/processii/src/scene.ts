@@ -21,6 +21,21 @@ import { z } from 'zod';
 export const ELEMENT_KINDS = ['rectangle', 'ellipse', 'line', 'arrow', 'text', 'step'] as const;
 export type ElementKind = (typeof ELEMENT_KINDS)[number];
 
+/**
+ * Element kinds that expose a **properties panel** in a host UI and can carry a hyperlink badge:
+ * the box-like items (`step` + the text-bearing shapes). Connectors (`line`/`arrow`) are excluded —
+ * they have no corner to anchor a badge nor a panel. Hosts gate their side-panel visibility on this
+ * set (a single-selection of one of these kinds shows the panel); {@link isPanelElementKind} is the
+ * predicate.
+ */
+export const PANEL_ELEMENT_KINDS = ['step', 'rectangle', 'ellipse', 'text'] as const;
+export type PanelElementKind = (typeof PANEL_ELEMENT_KINDS)[number];
+
+/** True when `kind` is a box-like element with a properties panel / link badge (see {@link PANEL_ELEMENT_KINDS}). */
+export function isPanelElementKind(kind: ElementKind): kind is PanelElementKind {
+  return (PANEL_ELEMENT_KINDS as readonly ElementKind[]).includes(kind);
+}
+
 /** Optional subjective indicator on a step (badge). */
 export const STEP_EMOTIONS = ['happy', 'neutral', 'sad'] as const;
 export type StepEmotion = (typeof STEP_EMOTIONS)[number];
@@ -86,6 +101,14 @@ const elementCommon = {
   ...baseStyle,
   /** Z-order: render order, higher = on top. */
   z: z.number().finite().default(0),
+  /**
+   * **Hyperlink** carried by the element: an external URL (or a host deep-link) the item points to.
+   * Surfaced by the renderer as a small link badge and opened by the host on click. Free string
+   * (opened as-is by the host, which normalizes/guards the scheme) — **native** field kept in the
+   * lossless save, ignored by the interop exports. Absent = no link; a non-empty value only
+   * (clearing sends `null` through {@link WhiteboardBoard.updateElement}).
+   */
+  url: z.string().min(1).optional(),
   /** Interop markers (preserved irreducibles). Empty for a purely native element. */
   markers: z.array(markerSchema).default([]),
   /**
@@ -396,6 +419,25 @@ export function parseScene(input: unknown): Scene {
     throw new WhiteboardParseError('Scène de whiteboard invalide', result.error.issues);
   }
   return result.data;
+}
+
+/**
+ * Normalizes a stored element {@link elementCommon.url} into a **safe href** to open: a host-relative
+ * path (`/…`) or an `http`/`https`/`mailto:` URL passes through unchanged; a bare value
+ * (`example.com`) is prefixed with `https://`; any **other explicit scheme** (`javascript:`,
+ * `data:`, `file:`…) is **refused** (returns `null`) so a link can never smuggle script execution.
+ * Pure — shared by the canvas (open on badge click) and the side panel ("Open" button).
+ */
+export function safeLinkHref(raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null;
+  // Protocol-relative (`//host`) → refuse: it inherits the page scheme and would be an open-redirect
+  // vector if a host routes `onOpenLink` in-app. A single leading `/` is a genuine host-relative path.
+  if (v.startsWith('//')) return null;
+  if (v.startsWith('/')) return v;
+  if (/^(https?:|mailto:)/i.test(v)) return v;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(v)) return null;
+  return `https://${v}`;
 }
 
 /** Creates a valid empty scene. */

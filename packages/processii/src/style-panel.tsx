@@ -6,11 +6,13 @@ import {
   AlignRight,
   Bold,
   Italic,
+  Link2,
   Minus,
   Plus,
   Strikethrough,
   Underline,
 } from 'lucide-react';
+import { safeLinkHref } from './scene.js';
 import type { WhiteboardEngine } from './engine.js';
 
 /**
@@ -57,7 +59,7 @@ function inkOn(hex: string): string {
 }
 
 export function StylePanel({ engine, onChange }: StylePanelProps) {
-  const [panel, setPanel] = useState<'fill' | 'stroke' | null>(null);
+  const [panel, setPanel] = useState<'fill' | 'stroke' | 'link' | null>(null);
 
   const apply = (patch: Parameters<WhiteboardEngine['updateSelection']>[0]): void => {
     engine.updateSelection(patch);
@@ -150,8 +152,18 @@ export function StylePanel({ engine, onChange }: StylePanelProps) {
 
   return (
     <div className="relative flex items-center gap-1.5 text-xs text-text" aria-label="Styles">
+      {/* Link editor sub-panel (#266): URL input + Open / Remove, for a box-like item. */}
+      {panel === 'link' && textEl && (
+        <LinkSubPanel
+          key={textEl.id}
+          url={textEl.url}
+          onSave={(url) => apply({ url })}
+          onClose={() => setPanel(null)}
+        />
+      )}
+
       {/* Second panel: segmented header + color grid (+ width for the stroke). */}
-      {panel && !(isFill && !fillAvailable) && (
+      {(panel === 'fill' || panel === 'stroke') && !(isFill && !fillAvailable) && (
         <div
           role="group"
           aria-label={isFill ? 'Palette de fond' : 'Palette de trait'}
@@ -343,6 +355,26 @@ export function StylePanel({ engine, onChange }: StylePanelProps) {
         {!hasStroke && <span className="text-[10px] leading-none text-muted">∅</span>}
       </button>
 
+      {/* Link (#266): box-like items only. Accent when the item already carries a link. */}
+      {textEl && (
+        <button
+          type="button"
+          aria-label="Lien"
+          title="Lien"
+          aria-pressed={panel === 'link'}
+          onClick={() => setPanel(panel === 'link' ? null : 'link')}
+          className={`flex size-7 items-center justify-center rounded-md border ${
+            panel === 'link'
+              ? 'border-accent ring-2 ring-accent'
+              : textEl.url
+                ? 'border-accent text-accent'
+                : 'border-border hover:text-accent'
+          }`}
+        >
+          <Link2 aria-hidden className="size-3.5" />
+        </button>
+      )}
+
       {/* Arrowheads (connectors only) */}
       {connector && (
         <>
@@ -376,6 +408,80 @@ export function StylePanel({ engine, onChange }: StylePanelProps) {
             ▶
           </button>
         </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Link editor sub-panel of the {@link StylePanel} (contextual style bar): a URL input + Open /
+ * Remove. Writes on **each keystroke** (badge appears live, and the value persists however the
+ * popover closes — Escape, outside click, selection change). Empty input → clears the field
+ * (`null`). Own local state, keyed by element id by the caller so it re-inits per item.
+ */
+function LinkSubPanel({
+  url,
+  onSave,
+  onClose,
+}: {
+  url: string | undefined;
+  onSave: (url: string | null) => void;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(url ?? '');
+  const href = safeLinkHref(value);
+  return (
+    <div
+      role="group"
+      aria-label="Lien"
+      className="absolute bottom-full right-0 z-10 mb-2 flex items-center gap-1 rounded-xl border border-border bg-surface p-2 shadow-xl"
+    >
+      <input
+        type="url"
+        value={value}
+        placeholder="https://…"
+        aria-label="Lien (URL)"
+        autoFocus
+        onChange={(e) => {
+          const v = e.target.value;
+          setValue(v);
+          const trimmed = v.trim();
+          onSave(trimmed === '' ? null : trimmed);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            onClose();
+          }
+        }}
+        className="w-52 rounded-md border border-border bg-bg px-2 py-1 text-text outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      />
+      <button
+        type="button"
+        aria-label="Ouvrir le lien"
+        disabled={!href}
+        onClick={() => {
+          if (!href) return;
+          if (typeof window !== 'undefined') window.open(href, '_blank', 'noopener,noreferrer');
+          onClose();
+        }}
+        className="rounded-md border border-border px-2 py-1 text-text hover:text-accent disabled:opacity-50"
+      >
+        Ouvrir
+      </button>
+      {value.trim() !== '' && (
+        <button
+          type="button"
+          aria-label="Retirer le lien"
+          onClick={() => {
+            setValue('');
+            onSave(null);
+            onClose();
+          }}
+          className="rounded-md border border-border px-2 py-1 text-muted hover:text-text"
+        >
+          Retirer
+        </button>
       )}
     </div>
   );

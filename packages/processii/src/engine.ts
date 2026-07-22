@@ -291,6 +291,21 @@ export class WhiteboardEngine {
     return newIds;
   }
 
+  /**
+   * Duplicates the current selection **in place** (copies land exactly on the sources, no nudge),
+   * selects the copies and returns their new ids. Building block of the **Alt-drag** clone: the
+   * canvas duplicates on the first move, then drags the copies while the originals stay put. Returns
+   * `[]` when nothing is selected. One transaction (one undo step), like {@link paste}.
+   */
+  duplicateInPlace(): string[] {
+    const payload = this.copySelection();
+    if (!payload) return [];
+    const box = unionBounds(payload.elements.map(elementBounds));
+    if (!box) return [];
+    // Anchor the block's bounding-box center onto itself → zero offset (exact overlay).
+    return this.paste(payload, { at: { x: box.x + box.width / 2, y: box.y + box.height / 2 } });
+  }
+
   // --- z-order (stacking) ---
 
   /**

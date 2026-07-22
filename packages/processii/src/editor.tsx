@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { CrdtAwareness, CrdtDoc } from './crdt/index.js';
 import { engineFromDoc, type BoundingBox, type WhiteboardEngine } from './engine.js';
+import { isPanelElementKind } from './scene.js';
 import { publishIdentity } from './presence.js';
 import { BoardCanvas, type ZoomApi } from './board-canvas.js';
 import type { WhiteboardClipboard } from './clipboard.js';
@@ -135,11 +136,12 @@ export function WhiteboardEditor({
   // toolbar (count) and the panel (selected step/lane) consistent.
   useEffect(() => engine.observe(forceRender), [engine]);
 
-  // Floating properties panel: visible when a lane or group is selected, or a **step** (click).
+  // Floating properties panel: visible when a lane or group is selected, or a single box-like
+  // element (step / shape / text — the kinds with a panel + a link field, #266).
   const engineSel = engine.getSelection();
-  const stepSelected =
-    engineSel.length === 1 && engine.board.getElement(engineSel[0]!)?.kind === 'step';
-  const showProps = editable && (!!selectedLaneId || !!selectedGroupId || stepSelected);
+  const single = engineSel.length === 1 ? engine.board.getElement(engineSel[0]!) : undefined;
+  const elementSelected = !!single && isPanelElementKind(single.kind);
+  const showProps = editable && (!!selectedLaneId || !!selectedGroupId || elementSelected);
 
   return (
     <div className={className ?? 'relative h-full w-full overflow-hidden'}>

@@ -1,7 +1,8 @@
+import { useReducer } from 'react';
 import { fireEvent, render, waitFor } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
-import { createEngine } from './engine.js';
-import { SidePanel } from './side-panel.js';
+import { describe, expect, it, vi } from 'vitest';
+import { createEngine, type WhiteboardEngine } from './engine.js';
+import { SidePanel, type SidePanelProps } from './side-panel.js';
 
 describe('SidePanel — step editing', () => {
   it('edits name, description and adds a skill', () => {
@@ -214,5 +215,57 @@ describe('SidePanel — without a selection', () => {
     const engine = createEngine({ clientId: 1 });
     const { getByText } = render(<SidePanel engine={engine} selectedLaneId={null} />);
     expect(getByText(/Sélectionne une étape/)).toBeInTheDocument();
+  });
+});
+
+describe('SidePanel — hyperlink field (#266)', () => {
+  // Harness: forces a re-render on `onChange`, exactly like the host (WhiteboardBody passes
+  // `forceRender`) → the field's controlled value and the "Open" button state follow engine writes.
+  function renderPanel(engine: WhiteboardEngine, extra: Partial<SidePanelProps> = {}) {
+    function Harness() {
+      const [, force] = useReducer((n: number) => n + 1, 0);
+      return <SidePanel engine={engine} selectedLaneId={null} onChange={force} {...extra} />;
+    }
+    return render(<Harness />);
+  }
+
+  it('sets and clears a step link, and "Open" calls the host with a guarded href', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement({ kind: 'step', id: 's1', x: 0, y: 0, width: 200, height: 120, name: 'A' });
+    const onOpenLink = vi.fn();
+    const { getByLabelText } = renderPanel(engine, { onOpenLink });
+    const input = getByLabelText('Lien (URL)');
+    fireEvent.change(input, { target: { value: 'example.com' } });
+    expect(engine.board.getElement('s1')).toMatchObject({ url: 'example.com' });
+    fireEvent.click(getByLabelText('Ouvrir le lien'));
+    expect(onOpenLink).toHaveBeenCalledWith('https://example.com');
+    // Clearing the input clears the field.
+    fireEvent.change(input, { target: { value: '' } });
+    expect(engine.board.getElement('s1')).not.toHaveProperty('url');
+  });
+
+  it('shows a link field + delete for a selected basic shape (rectangle)', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement({ kind: 'rectangle', id: 'r1', x: 0, y: 0, width: 80, height: 40 });
+    const { getByLabelText, getByText } = renderPanel(engine);
+    // Title reflects the kind.
+    expect(getByText('Rectangle')).toBeInTheDocument();
+    fireEvent.change(getByLabelText('Lien (URL)'), { target: { value: 'https://x.test' } });
+    expect(engine.board.getElement('r1')).toMatchObject({ url: 'https://x.test' });
+    fireEvent.click(getByText('Supprimer'));
+    expect(engine.board.getElement('r1')).toBeUndefined();
+  });
+
+  it('the "Open" button is disabled for a dangerous / empty link', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement({ kind: 'text', id: 't1', x: 0, y: 0, width: 80, height: 40, text: 'hi' });
+    const onOpenLink = vi.fn();
+    const { getByLabelText } = renderPanel(engine, { onOpenLink });
+    const open = getByLabelText('Ouvrir le lien') as HTMLButtonElement;
+    expect(open.disabled).toBe(true); // empty
+    fireEvent.change(getByLabelText('Lien (URL)'), { target: { value: 'javascript:alert(1)' } });
+    expect(open.disabled).toBe(true); // refused scheme → still no safe href
+    fireEvent.click(open);
+    expect(onOpenLink).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, Switch } from './ui/index.js';
 import { LANE_PALETTE } from './render.js';
-import { SWIMLANE_COLORS, type SwimlaneColor } from './scene.js';
+import { safeLinkHref, SWIMLANE_COLORS, type SwimlaneColor } from './scene.js';
 import type { WhiteboardEngine } from './engine.js';
 
 /**
@@ -33,6 +33,11 @@ export interface SidePanelProps {
    * or `undefined` result → the panel shows no name (the ref stays opaque, never displayed raw).
    */
   readonly resolveSubprocessLabel?: (ref: string) => string | undefined;
+  /**
+   * **Hyperlink** open handler for the "Open" button of the link field (#266). Omitted → opens in a
+   * new tab (`window.open`). The passed href is already scheme-guarded by {@link safeLinkHref}.
+   */
+  readonly onOpenLink?: (href: string) => void;
 }
 
 /** Swatch of a swimlane color (extension palette; neutral = ui-kit token). */
@@ -96,6 +101,51 @@ function LabelList({
   );
 }
 
+/**
+ * Hyperlink field (#266): a URL input + an "Open" button. Typing writes through immediately (like
+ * the other fields); clearing the input clears the field (`onChange(null)`). "Open" is enabled only
+ * for a value that resolves to a safe href ({@link safeLinkHref}).
+ */
+function LinkField({
+  url,
+  onChange,
+  onOpen,
+}: {
+  url: string | undefined;
+  onChange: (next: string | null) => void;
+  onOpen: (href: string) => void;
+}) {
+  const href = url ? safeLinkHref(url) : null;
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-xs text-muted">Lien (URL)</span>
+      <div className="flex gap-1">
+        <input
+          className={`${inputCls} min-w-0 flex-1`}
+          type="url"
+          value={url ?? ''}
+          placeholder="https://…"
+          aria-label="Lien (URL)"
+          onChange={(e) => {
+            const v = e.target.value;
+            const trimmed = v.trim();
+            onChange(trimmed === '' ? null : trimmed);
+          }}
+        />
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={!href}
+          aria-label="Ouvrir le lien"
+          onClick={() => href && onOpen(href)}
+        >
+          Ouvrir
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function field(label: string, control: React.ReactNode): React.JSX.Element {
   return (
     <label className="flex flex-col gap-1">
@@ -118,7 +168,13 @@ export function SidePanel({
   onCreateSubprocess,
   onNavigateSubprocess,
   resolveSubprocessLabel,
+  onOpenLink,
 }: SidePanelProps) {
+  // Opens a (already scheme-guarded) href: the host handler, else a new tab.
+  const openHref = (href: string): void => {
+    if (onOpenLink) onOpenLink(href);
+    else if (typeof window !== 'undefined') window.open(href, '_blank', 'noopener,noreferrer');
+  };
   const group = selectedGroupId
     ? (engine.listAgentGroups().find((g) => g.id === selectedGroupId) ?? null)
     : null;
@@ -437,6 +493,14 @@ export function SidePanel({
             )}
           </div>
         )}
+        <LinkField
+          url={s.url}
+          onChange={(next) => {
+            engine.updateElement(s.id, { url: next });
+            onChange?.();
+          }}
+          onOpen={openHref}
+        />
         <Button
           size="sm"
           variant="danger"
@@ -452,10 +516,42 @@ export function SidePanel({
     );
   }
 
+  // Basic shape / text (rectangle, ellipse, text): a minimal panel — the hyperlink field (#266)
+  // and delete. (Style — fill/stroke/width — lives in the on-canvas contextual bar, not here.)
+  if (step && (step.kind === 'rectangle' || step.kind === 'ellipse' || step.kind === 'text')) {
+    const el = step;
+    const title =
+      el.kind === 'rectangle' ? 'Rectangle' : el.kind === 'ellipse' ? 'Ellipse' : 'Texte';
+    return wrap(
+      <>
+        <h2 className="border-b border-border pb-2 text-sm font-semibold text-text">{title}</h2>
+        <LinkField
+          url={el.url}
+          onChange={(next) => {
+            engine.updateElement(el.id, { url: next });
+            onChange?.();
+          }}
+          onOpen={openHref}
+        />
+        <Button
+          size="sm"
+          variant="danger"
+          className="mt-1 w-full"
+          onClick={() => {
+            engine.removeElement(el.id);
+            onChange?.();
+          }}
+        >
+          Supprimer
+        </Button>
+      </>,
+    );
+  }
+
   return wrap(
     <p className="text-xs text-muted">
-      Sélectionne une étape (clic), une bande ou un groupe (clic sur son en-tête) pour éditer ses
-      propriétés.
+      Sélectionne une étape (clic), une forme ou un texte (clic), une bande ou un groupe (clic sur
+      son en-tête) pour éditer ses propriétés.
     </p>,
   );
 }

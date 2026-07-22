@@ -365,3 +365,50 @@ describe('engine — z-order (stacking)', () => {
     expect(engine.sendToBack(['nope'])).toBe(0);
   });
 });
+
+describe('engine — duplicateInPlace (#265, Alt-drag)', () => {
+  it('duplicates the selection at the exact same position and selects the copies', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(
+      { kind: 'rectangle', id: 'a', x: 30, y: 50, width: 20, height: 20 },
+      { select: false },
+    );
+    engine.select(['a']);
+    const ids = engine.duplicateInPlace();
+    expect(engine.board.size).toBe(2);
+    expect(ids).toHaveLength(1);
+    expect(ids[0]).not.toBe('a');
+    // In place: the copy overlays the source (no nudge).
+    expect(engine.board.getElement(ids[0]!)).toMatchObject({ x: 30, y: 50 });
+    // Selection moved to the copies; the original is untouched.
+    expect(engine.getSelection()).toEqual(ids);
+    expect(engine.board.getElement('a')).toMatchObject({ x: 30, y: 50 });
+  });
+
+  it('duplicates a multi-selection as a block in place', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(
+      { kind: 'rectangle', id: 'a', x: 0, y: 0, width: 10, height: 10 },
+      { select: false },
+    );
+    engine.addElement(
+      { kind: 'rectangle', id: 'b', x: 100, y: 0, width: 10, height: 10 },
+      { select: false },
+    );
+    engine.select(['a', 'b']);
+    const ids = engine.duplicateInPlace();
+    expect(engine.board.size).toBe(4);
+    expect(ids).toHaveLength(2);
+  });
+
+  it('returns [] with nothing selected', () => {
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(
+      { kind: 'rectangle', id: 'a', x: 0, y: 0, width: 10, height: 10 },
+      { select: false },
+    );
+    engine.clearSelection();
+    expect(engine.duplicateInPlace()).toEqual([]);
+    expect(engine.board.size).toBe(1);
+  });
+});
