@@ -20,6 +20,8 @@
 // --- Scene model ---
 export {
   ELEMENT_KINDS,
+  PANEL_ELEMENT_KINDS,
+  isPanelElementKind,
   STEP_EMOTIONS,
   SUBPROCESS_KINDS,
   BOARD_TYPES,
@@ -37,9 +39,11 @@ export {
   parseElement,
   parseScene,
   emptyScene,
+  safeLinkHref,
   WhiteboardParseError,
   WhiteboardSchemaVersionError,
   type ElementKind,
+  type PanelElementKind,
   type StepEmotion,
   type SubprocessKind,
   type BoardType,
@@ -89,6 +93,8 @@ export {
   renderToCanvas,
   resolveColor,
   isColorToken,
+  linkBadgeRect,
+  LINK_BADGE_SIZE,
   SELECTION_COLOR,
   LANE_PALETTE,
   type CanvasLike,
@@ -138,7 +144,13 @@ export {
 } from './handles.js';
 
 // --- Snapping / alignment ---
-export { snapMove, type SnapResult } from './snap.js';
+export {
+  snapMove,
+  snapSpacing,
+  type SnapResult,
+  type SpacingGuide,
+  type SpacingResult,
+} from './snap.js';
 
 // --- History (undo/redo) ---
 export { wrapUndoManager, type WhiteboardHistory } from './history.js';

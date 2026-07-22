@@ -8,7 +8,7 @@ import {
   MIN_ELEMENT_SIZE,
   type HandleKind,
 } from './handles.js';
-import { isColorToken, renderToCanvas, type CanvasLike } from './render.js';
+import { isColorToken, linkBadgeRect, renderToCanvas, type CanvasLike } from './render.js';
 import {
   panBy,
   screenToWorld,
@@ -20,11 +20,11 @@ import {
   type Size,
   type Viewport,
 } from './viewport.js';
-import { snapMove, snapResize } from './snap.js';
+import { snapMove, snapResize, snapSpacing, type SpacingGuide } from './snap.js';
 import { connectorElbow } from './connector.js';
 import { createMemoryClipboard, type WhiteboardClipboard } from './clipboard.js';
 import type { BoundingBox, WhiteboardEngine } from './engine.js';
-import type { WhiteboardElement } from './scene.js';
+import { safeLinkHref, type WhiteboardElement } from './scene.js';
 import type { CrdtAwareness } from './crdt/index.js';
 import { StylePanel } from './style-panel.js';
 import { ZoomControl } from './zoom-control.js';
@@ -71,6 +71,13 @@ export interface BoardCanvasProps {
   readonly onSelectGroup?: (id: string | null) => void;
   /** Sub-process: double-click on a linked step → "enter" the `ref` child whiteboard. */
   readonly onNavigateSubprocess?: (ref: string) => void;
+  /**
+   * **Hyperlink** open handler: called with the (already scheme-guarded) href when the user clicks
+   * an item's link badge — see {@link linkBadgeRect}. Omitted → the canvas opens it itself in a new
+   * tab (`window.open(href, '_blank', 'noopener,noreferrer')`). A host can override to route
+   * in-app deep-links.
+   */
+  readonly onOpenLink?: (href: string) => void;
   /** Initial zoom (and "reset view" zoom). Defaults to `1`. Used e.g. to zoom out an embedded
    *  demo on a small screen so the whole board fits without changing its proportions. */
   readonly initialZoom?: number;
@@ -144,8 +151,15 @@ type Interaction =
       readonly mode: 'moving';
       readonly startWorld: Point;
       readonly startBounds: BoundingBox;
-      readonly otherBounds: readonly BoundingBox[];
+      // Not readonly: re-captured after an Alt-drag clone (the freed originals become snap targets).
+      otherBounds: readonly BoundingBox[];
+      // Element-only bounds (no swimlanes) for equal-spacing snapping; re-captured after a clone too.
+      spacingTargets: readonly BoundingBox[];
       applied: Point;
+      /** Alt held at grab → duplicate the selection on the first move, then drag the copies (#265). */
+      readonly altClone: boolean;
+      /** Whether the Alt-drag clone already happened (guards a single duplication per gesture). */
+      cloned: boolean;
     }
   | {
       readonly mode: 'resizing';
@@ -354,6 +368,7 @@ export function BoardCanvas({
   selectedGroupId,
   onSelectGroup,
   onNavigateSubprocess,
+  onOpenLink,
   initialZoom = 1,
   onViewportChange,
   hideZoomControl,
@@ -382,6 +397,8 @@ export function BoardCanvas({
   // Ids intersected by the in-progress marquee (selection preview before release).
   const marqueeHits = useRef<string[]>([]);
   const guides = useRef<{ x?: number; y?: number } | undefined>(undefined);
+  // Equal-spacing (distribution) gap segments to draw during a move (#snapSpacing).
+  const spacingGuides = useRef<readonly SpacingGuide[] | undefined>(undefined);
   // Preview of the **lane header drag**: ghost (translucent lane following the cursor, in world
   // coords) + optional drop line (reorder/attach) + the action to commit on release.
   const laneDrag = useRef<
@@ -522,6 +539,7 @@ export function BoardCanvas({
       ...(marquee.current ? { marquee: marquee.current } : {}),
       ...(marqueeHits.current.length ? { marqueeHighlightIds: marqueeHits.current } : {}),
       ...(guides.current ? { guides: guides.current } : {}),
+      ...(spacingGuides.current?.length ? { spacingGuides: spacingGuides.current } : {}),
       ...(selectedLaneId ? { selectedLaneId } : {}),
       ...(selectedGroupId ? { selectedGroupId } : {}),
       ...(remoteSelectionsRef.current.length
@@ -681,15 +699,17 @@ export function BoardCanvas({
    * Snapping/alignment targets: the **non**-selected elements **plus** the **swimlanes**
    * (edges + centers). Additive → the existing block-to-block snapping is unchanged.
    */
-  const snapTargets = (): BoundingBox[] => {
+  // Bounds of the non-selected ELEMENTS only (no swimlanes) — used for equal-spacing (a lane band
+  // would distort every gap) and as the element part of the alignment targets.
+  const elementTargets = (): BoundingBox[] => {
     const selected = new Set(engine.getSelection());
-    const elements = engine
+    return engine
       .listElements()
       .filter((el) => !selected.has(el.id))
       .map((el) => engine.boundingBox(el.id))
       .filter((b): b is BoundingBox => b !== undefined);
-    return [...elements, ...engine.swimlaneBounds()];
   };
+  const snapTargets = (): BoundingBox[] => [...elementTargets(), ...engine.swimlaneBounds()];
 
   /** Cluster whose inner **left-edge move grip** is under the world point, or `null`. */
   const gripClusterAtPoint = (world: Point, zoom: number): string | null => {
@@ -707,9 +727,36 @@ export function BoardCanvas({
     return null;
   };
 
+  /** Element whose **link badge** is under the world point (top-most first), or `undefined` (#266). */
+  const linkBadgeAtPoint = (world: Point): WhiteboardElement | undefined => {
+    const els = engine.listElements(); // z-ascending → iterate from the top (last) down
+    for (let i = els.length - 1; i >= 0; i -= 1) {
+      const el = els[i]!;
+      const rect = linkBadgeRect(el);
+      if (
+        rect &&
+        world.x >= rect.x &&
+        world.x <= rect.x + rect.width &&
+        world.y >= rect.y &&
+        world.y <= rect.y + rect.height
+      )
+        return el;
+    }
+    return undefined;
+  };
+
+  /** Opens an element hyperlink: scheme-guarded, then the host handler or a new tab (#266). */
+  const openLink = (url: string): void => {
+    const href = safeLinkHref(url);
+    if (!href) return;
+    if (onOpenLink) onOpenLink(href);
+    else if (typeof window !== 'undefined') window.open(href, '_blank', 'noopener,noreferrer');
+  };
+
   /** Cursor to display on hover (action available under the pointer). */
   const cursorFor = (world: Point, zoom: number): string => {
     if (spaceHeld.current) return 'grab';
+    if (linkBadgeAtPoint(world)) return 'pointer';
     const sel = engine.getSelection();
     if (sel.length === 1) {
       const el = engine.board.getElement(sel[0]!);
@@ -825,6 +872,17 @@ export function BoardCanvas({
       }
     }
 
+    // 1b) Hyperlink badge (inside the top-right corner) → open the link instead of selecting/dragging.
+    //     Checked AFTER the resize handles (so a selected item still resizes from its corner) but
+    //     BEFORE the element hit-test (the badge sits inside the bounds — otherwise a click there
+    //     would select/move the element).
+    const badged = linkBadgeAtPoint(world);
+    if (badged?.url) {
+      openLink(badged.url);
+      interaction.current = { mode: 'idle' };
+      return;
+    }
+
     // 2) Swimlane edge → mouse-driven resizing (before element selection). Right edge = the
     //    cluster's shared width; bottom edge = that lane's height.
     const edge = engine.laneEdgeAtPoint(world, LANE_EDGE_TOLERANCE / zoom);
@@ -883,7 +941,11 @@ export function BoardCanvas({
               startWorld: world,
               startBounds,
               otherBounds: snapTargets(),
+              spacingTargets: elementTargets(),
               applied: { x: 0, y: 0 },
+              // Alt held at grab = duplicate on the first move, then drag the copies (#265).
+              altClone: event.altKey,
+              cloned: false,
             }
           : { mode: 'idle' };
       }
@@ -923,6 +985,7 @@ export function BoardCanvas({
     }
     marquee.current = undefined;
     guides.current = undefined;
+    spacingGuides.current = undefined;
     laneDrag.current = undefined;
     onChange?.();
     draw();
@@ -1065,28 +1128,40 @@ export function BoardCanvas({
 
     if (state.mode === 'moving') {
       const raw = { x: world.x - state.startWorld.x, y: world.y - state.startWorld.y };
+      // Alt-drag (#265): on the first real move, duplicate the selection **in place** and drag the
+      // COPIES (the originals stay put). `startBounds` is unchanged (copies overlay the sources);
+      // re-capture the snap targets so the copies can align to the originals they just left.
+      if (state.altClone && !state.cloned && (raw.x !== 0 || raw.y !== 0)) {
+        engine.duplicateInPlace();
+        state.cloned = true;
+        state.otherBounds = snapTargets();
+        state.spacingTargets = elementTargets();
+      }
       const proposed: BoundingBox = {
         x: state.startBounds.x + raw.x,
         y: state.startBounds.y + raw.y,
         width: state.startBounds.width,
         height: state.startBounds.height,
       };
-      const snap = snapMove(
-        proposed,
-        state.otherBounds,
-        SNAP_SCREEN_THRESHOLD / vpRef.current.zoom,
-      );
-      const target = { x: raw.x + snap.dx, y: raw.y + snap.dy };
+      const thr = SNAP_SCREEN_THRESHOLD / vpRef.current.zoom;
+      const snap = snapMove(proposed, state.otherBounds, thr);
+      // Equal-spacing (distribution) snap — takes priority PER AXIS over edge alignment (you want the
+      // equal gap on the distribution axis, edge alignment on the other). Element-only targets.
+      const space = snapSpacing(proposed, state.spacingTargets, thr);
+      const dx = space.dx ?? snap.dx;
+      const dy = space.dy ?? snap.dy;
+      const target = { x: raw.x + dx, y: raw.y + dy };
       engine.moveSelection(target.x - state.applied.x, target.y - state.applied.y);
       engine.refreshConnectors();
       state.applied = target;
+      // Alignment guide lines only for the axes NOT taken over by a spacing snap.
+      const gx = space.dx === undefined ? snap.guideX : undefined;
+      const gy = space.dy === undefined ? snap.guideY : undefined;
       guides.current =
-        snap.guideX !== undefined || snap.guideY !== undefined
-          ? {
-              ...(snap.guideX !== undefined ? { x: snap.guideX } : {}),
-              ...(snap.guideY !== undefined ? { y: snap.guideY } : {}),
-            }
+        gx !== undefined || gy !== undefined
+          ? { ...(gx !== undefined ? { x: gx } : {}), ...(gy !== undefined ? { y: gy } : {}) }
           : undefined;
+      spacingGuides.current = space.guides.length ? space.guides : undefined;
       draw();
       return;
     }
@@ -1128,6 +1203,7 @@ export function BoardCanvas({
     marquee.current = undefined;
     marqueeHits.current = [];
     guides.current = undefined;
+    spacingGuides.current = undefined;
     laneDrag.current = undefined;
     interaction.current = { mode: 'idle' };
     onChange?.();
@@ -1482,6 +1558,31 @@ export function BoardCanvas({
           return;
         }
       }
+    }
+    // Arrow keys: nudge the selection by 1 world px (10 with Shift) — standard design-tool behavior
+    // (#264). Meta/Ctrl+arrow is left to the browser (history nav) → not hijacked.
+    if (
+      !editing &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      (event.key === 'ArrowUp' ||
+        event.key === 'ArrowDown' ||
+        event.key === 'ArrowLeft' ||
+        event.key === 'ArrowRight')
+    ) {
+      if (engine.getSelection().length === 0) return;
+      event.preventDefault();
+      const stepPx = event.shiftKey ? 10 : 1;
+      const dx = event.key === 'ArrowLeft' ? -stepPx : event.key === 'ArrowRight' ? stepPx : 0;
+      const dy = event.key === 'ArrowUp' ? -stepPx : event.key === 'ArrowDown' ? stepPx : 0;
+      // One transaction → a multi-selection nudge is a single undo step, connectors re-route atomically.
+      engine.board.transact(() => {
+        engine.moveSelection(dx, dy);
+        engine.refreshConnectors();
+      });
+      onChange?.();
+      draw();
+      return;
     }
     if (event.key === 'Delete' || event.key === 'Backspace') {
       if (engine.getSelection().length > 0) {

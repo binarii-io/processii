@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   emptyScene,
+  isPanelElementKind,
   LEGACY_CLUSTER_ID,
   parseElement,
   parseScene,
+  safeLinkHref,
   WhiteboardParseError,
 } from './scene.js';
 
@@ -109,5 +111,57 @@ describe('scene model — validation', () => {
     expect(() => parseScene({ version: 1, elements: [{ kind: 'rectangle' }] })).toThrow(
       WhiteboardParseError,
     );
+  });
+
+  it('keeps an element hyperlink (`url`) and rejects an empty one', () => {
+    const el = parseElement({
+      kind: 'rectangle',
+      id: 'r',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+      url: 'https://decathlon.fr',
+    });
+    expect(el.url).toBe('https://decathlon.fr');
+    // Absent by default (no link).
+    expect(parseElement({ kind: 'rectangle', id: 'r2', x: 0, y: 0, width: 1, height: 1 }).url).toBe(
+      undefined,
+    );
+    // An empty string is not a valid link (min length 1).
+    expect(() =>
+      parseElement({ kind: 'text', id: 't', x: 0, y: 0, width: 1, height: 1, text: 'x', url: '' }),
+    ).toThrow(WhiteboardParseError);
+  });
+});
+
+describe('safeLinkHref (#266) — scheme guard', () => {
+  it('prefixes a bare host with https://', () => {
+    expect(safeLinkHref('example.com')).toBe('https://example.com');
+    expect(safeLinkHref('  example.com/path  ')).toBe('https://example.com/path');
+  });
+  it('keeps http/https/mailto as-is', () => {
+    expect(safeLinkHref('http://x.test')).toBe('http://x.test');
+    expect(safeLinkHref('https://x.test')).toBe('https://x.test');
+    expect(safeLinkHref('mailto:a@b.test')).toBe('mailto:a@b.test');
+  });
+  it('passes a host-relative deep link through', () => {
+    expect(safeLinkHref('/docs/42')).toBe('/docs/42');
+  });
+  it('refuses a dangerous scheme and empty input', () => {
+    expect(safeLinkHref('javascript:alert(1)')).toBeNull();
+    expect(safeLinkHref('data:text/html,x')).toBeNull();
+    expect(safeLinkHref('   ')).toBeNull();
+  });
+});
+
+describe('isPanelElementKind (#266)', () => {
+  it('is true for box-like kinds, false for connectors', () => {
+    expect(isPanelElementKind('step')).toBe(true);
+    expect(isPanelElementKind('rectangle')).toBe(true);
+    expect(isPanelElementKind('ellipse')).toBe(true);
+    expect(isPanelElementKind('text')).toBe(true);
+    expect(isPanelElementKind('line')).toBe(false);
+    expect(isPanelElementKind('arrow')).toBe(false);
   });
 });

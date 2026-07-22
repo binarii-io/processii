@@ -71,6 +71,156 @@ export function snapMove(
   };
 }
 
+/** A gap-measurement segment to draw (equal-spacing guide), in world coordinates. */
+export interface SpacingGuide {
+  readonly x1: number;
+  readonly y1: number;
+  readonly x2: number;
+  readonly y2: number;
+}
+
+/**
+ * Equal-spacing snap result: a per-axis correction (present only when a spacing snap applies on
+ * that axis) plus the gap segments to draw. Distinct from {@link SnapResult} (edge/center
+ * alignment) — the two combine (align one axis, distribute the other).
+ */
+export interface SpacingResult {
+  /** Horizontal correction (present when a horizontal equal-gap snap applies). */
+  readonly dx?: number;
+  /** Vertical correction (present when a vertical equal-gap snap applies). */
+  readonly dy?: number;
+  /** Gap segments to draw (both axes when both snap). Empty when nothing snaps. */
+  readonly guides: readonly SpacingGuide[];
+}
+
+/** True when the intervals `[a, a+as]` and `[b, b+bs]` overlap (strictly). */
+function intervalsOverlap(a: number, as: number, b: number, bs: number): boolean {
+  return a < b + bs && b < a + as;
+}
+
+/**
+ * Best equal-spacing snap of `box` along **one axis**, given the row-mates already filtered to
+ * those overlapping `box` on the perpendicular axis. Generic over the axis via accessors: `mainStart`
+ * reads the start on the distribution axis (x for horizontal), `mainSize` its size; `box` is
+ * `{ start, size }` on that axis; `crossCenter` is where to draw the gap segments (the box center on
+ * the perpendicular axis). Returns the delta to add on the main axis + the two gap segments, or
+ * `undefined`. Three candidates: **equal gap between** the two neighbors, or **match** the gap of an
+ * outer pair to **extend** the row on either side; the closest within `threshold` wins.
+ */
+function bestSpacing(
+  box: { start: number; size: number },
+  mates: readonly { start: number; size: number }[],
+  crossCenter: number,
+  threshold: number,
+  seg: (a: number, b: number, cross: number) => SpacingGuide,
+): { delta: number; guides: SpacingGuide[] } | undefined {
+  if (mates.length < 2) return undefined;
+  const bc = box.start + box.size / 2;
+  const left = mates
+    .filter((m) => m.start + m.size / 2 < bc)
+    .sort((a, b) => b.start + b.size - (a.start + a.size)); // nearest (largest right edge) first
+  const right = mates.filter((m) => m.start + m.size / 2 >= bc).sort((a, b) => a.start - b.start);
+  const L = left[0];
+  const LL = left[1];
+  const R = right[0];
+  const RR = right[1];
+  const candidates: { target: number; guides: SpacingGuide[] }[] = [];
+  // 1) Equal gap between the left and right neighbours.
+  if (L && R) {
+    const inner = R.start - (L.start + L.size);
+    const gap = (inner - box.size) / 2;
+    if (gap > 0) {
+      const target = L.start + L.size + gap;
+      candidates.push({
+        target,
+        guides: [
+          seg(L.start + L.size, target, crossCenter),
+          seg(target + box.size, R.start, crossCenter),
+        ],
+      });
+    }
+  }
+  // 2) Extend on the right: reproduce the gap of the outer left pair (LL → L) as (L → box).
+  if (L && LL) {
+    const g = L.start - (LL.start + LL.size);
+    if (g > 0) {
+      const target = L.start + L.size + g;
+      candidates.push({
+        target,
+        guides: [
+          seg(LL.start + LL.size, LL.start + LL.size + g, crossCenter),
+          seg(L.start + L.size, target, crossCenter),
+        ],
+      });
+    }
+  }
+  // 3) Extend on the left: reproduce the gap of the outer right pair (R → RR) as (box → R).
+  if (R && RR) {
+    const g = RR.start - (R.start + R.size);
+    if (g > 0) {
+      const target = R.start - g - box.size;
+      candidates.push({
+        target,
+        guides: [
+          seg(target + box.size, R.start, crossCenter),
+          seg(R.start + R.size, R.start + R.size + g, crossCenter),
+        ],
+      });
+    }
+  }
+  let best: { delta: number; guides: SpacingGuide[] } | undefined;
+  for (const c of candidates) {
+    const delta = c.target - box.start;
+    if (Math.abs(delta) <= threshold && (!best || Math.abs(delta) < Math.abs(best.delta))) {
+      best = { delta, guides: c.guides };
+    }
+  }
+  return best;
+}
+
+/**
+ * **Equal-spacing (distribution) snap** — the smart-guide behavior "two elements have a gap, drop a
+ * third and it takes the same gap". Snaps a moving `box` so that, along an axis, it either lands
+ * **equidistant** between its two neighbours or **reproduces** the gap of an adjacent pair to extend
+ * the row. Considers only `others` that **overlap the box on the perpendicular axis** (a "row"/
+ * "column"). Returns the per-axis correction (present only where it snaps) + the gap segments to
+ * draw. Pure; pass only **element** bounds (not swimlanes) — a lane band would distort every gap.
+ */
+export function snapSpacing(
+  box: BoundingBox,
+  others: readonly BoundingBox[],
+  threshold: number,
+): SpacingResult {
+  if (others.length === 0 || threshold <= 0) return { guides: [] };
+  // Horizontal distribution: row-mates overlap the box vertically; gap segments are horizontal.
+  const rowMates = others
+    .filter((o) => intervalsOverlap(box.y, box.height, o.y, o.height))
+    .map((o) => ({ start: o.x, size: o.width }));
+  const x = bestSpacing(
+    { start: box.x, size: box.width },
+    rowMates,
+    box.y + box.height / 2,
+    threshold,
+    (a, b, cross) => ({ x1: a, y1: cross, x2: b, y2: cross }),
+  );
+  // Vertical distribution: column-mates overlap horizontally; gap segments are vertical.
+  const colMates = others
+    .filter((o) => intervalsOverlap(box.x, box.width, o.x, o.width))
+    .map((o) => ({ start: o.y, size: o.height }));
+  const y = bestSpacing(
+    { start: box.y, size: box.height },
+    colMates,
+    box.x + box.width / 2,
+    threshold,
+    (a, b, cross) => ({ x1: cross, y1: a, x2: cross, y2: b }),
+  );
+  return {
+    ...(x ? { dx: x.delta } : {}),
+    ...(y ? { dy: y.delta } : {}),
+    guides: [...(x?.guides ?? []), ...(y?.guides ?? [])],
+  };
+}
+
 /** Which sides a resize handle drags. Only the flagged edges move; the opposite ones stay fixed. */
 export interface ResizeEdges {
   readonly left?: boolean;

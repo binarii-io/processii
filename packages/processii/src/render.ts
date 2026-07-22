@@ -23,6 +23,31 @@ import type {
 import { GROUP_HEADER_HEIGHT } from './engine.js';
 import { IDENTITY_VIEWPORT, type Viewport } from './viewport.js';
 import { elementHandles, hasHandles, HANDLE_SCREEN_SIZE } from './handles.js';
+import { isPanelElementKind, type WhiteboardElement } from './scene.js';
+import type { SpacingGuide } from './snap.js';
+
+/** Side (world px) of the hyperlink badge glyph drawn in an item's top-right corner. */
+export const LINK_BADGE_SIZE = 16;
+/** Inset (world px) of the badge from the item's top and right edges. */
+const LINK_BADGE_INSET = 4;
+
+/**
+ * World rectangle of the **hyperlink badge** of an element, or `null` when the element carries no
+ * `url` or is not a box-like item (connectors have no badge). Placed **inside the top-right corner**
+ * of the item (inset by {@link LINK_BADGE_INSET}). Single source of truth shared by the renderer
+ * (draws the glyph here) and the canvas hit-test (opens the link on click) → the drawn badge and its
+ * clickable target always coincide. Computed in **unrotated** world coords. The canvas checks it
+ * **after** the resize handles, so a selected item still resizes from its corner.
+ */
+export function linkBadgeRect(el: WhiteboardElement): BoundingBox | null {
+  if (!el.url || !isPanelElementKind(el.kind)) return null;
+  return {
+    x: el.x + el.width - LINK_BADGE_SIZE - LINK_BADGE_INSET,
+    y: el.y + LINK_BADGE_INSET,
+    width: LINK_BADGE_SIZE,
+    height: LINK_BADGE_SIZE,
+  };
+}
 
 const TOKEN_SET: ReadonlySet<string> = new Set<string>(semanticColorNames);
 
@@ -119,6 +144,8 @@ export interface RenderOptions {
   readonly marqueeHighlightIds?: readonly string[];
   /** Alignment guide lines (snapping) to draw in **world** coordinates. */
   readonly guides?: { readonly x?: number; readonly y?: number };
+  /** Equal-spacing (distribution) gap segments to draw in **world** coordinates (#snapSpacing). */
+  readonly spacingGuides?: readonly SpacingGuide[];
   /** Id of the selected swimlane (highlight). */
   readonly selectedLaneId?: string;
   /** Id of the selected group (highlight). */
@@ -190,6 +217,14 @@ export function renderToCanvas(
       if (item.element.id === options.hiddenElementId) continue;
       drawItem(ctx, item);
     }
+    // Hyperlink badges (top-right corner): a separate pass **after** the element bodies and in
+    // **unrotated** world coords, so the drawn badge coincides with the canvas hit-test
+    // (`linkBadgeRect`) that opens the link on click — and sits on top of the item content.
+    for (const item of model.elements) {
+      if (item.element.id === options.hiddenElementId) continue;
+      const rect = linkBadgeRect(item.element);
+      if (rect) drawLinkBadge(ctx, rect);
+    }
     // Remote selections (collab): per-peer colored highlight, under the local selection.
     if (options.remoteSelections?.length) {
       const boundsById = new Map(model.elements.map((it) => [it.element.id, it.bounds]));
@@ -219,6 +254,7 @@ export function renderToCanvas(
       }
     }
     if (options.guides) drawGuides(ctx, options.guides, viewport.zoom);
+    if (options.spacingGuides?.length) drawSpacingGuides(ctx, options.spacingGuides, viewport.zoom);
     if (options.marquee) drawMarquee(ctx, options.marquee, viewport.zoom);
   } finally {
     ctx.restore();
@@ -619,7 +655,9 @@ function drawItem(ctx: CanvasLike, item: RenderItem): void {
       if (element.emotion) {
         ctx.font = '14px sans-serif';
         const mark = element.emotion === 'happy' ? '😊' : element.emotion === 'sad' ? '😞' : '😐';
-        ctx.fillText(mark, element.x + element.width - pad - 16, element.y + pad + 12);
+        // Shift left when a link badge occupies the top-right corner, so the two never overlap.
+        const emoX = element.x + element.width - pad - 16 - (element.url ? LINK_BADGE_SIZE + 4 : 0);
+        ctx.fillText(mark, emoX, element.y + pad + 12);
       }
       // **Sub-process** indicator (bottom-right corner): the step opens a child whiteboard on double-click.
       if (element.subprocessRef) {
@@ -662,6 +700,44 @@ function drawItem(ctx: CanvasLike, item: RenderItem): void {
       break;
     }
   }
+  ctx.restore();
+}
+
+/**
+ * Draws the hyperlink badge — a monochrome **"external link" icon** stroked in the accent color
+ * (no chip/outline, per design), a box with an arrow leaving toward the top-right — inside the
+ * item's top-right corner at `rect` (world coords). A **vector** icon (not an emoji): the geometry
+ * is lucide's `external-link` normalized to the badge rect, corners kept sharp (crisp at this size,
+ * and the `CanvasLike` subset has no `arc`). Consistent with the emotion/sub-process glyphs' scale
+ * (world units → follows the zoom).
+ */
+function drawLinkBadge(ctx: CanvasLike, rect: BoundingBox): void {
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  ctx.strokeStyle = paint('accent');
+  ctx.lineWidth = Math.max(1.1, rect.width * 0.1);
+  const px = (u: number): number => rect.x + u * rect.width;
+  const py = (u: number): number => rect.y + u * rect.height;
+  // Box (open at the top-right so the arrow can exit).
+  ctx.beginPath();
+  ctx.moveTo(px(0.75), py(0.54));
+  ctx.lineTo(px(0.75), py(0.88));
+  ctx.lineTo(px(0.12), py(0.88));
+  ctx.lineTo(px(0.12), py(0.25));
+  ctx.lineTo(px(0.46), py(0.25));
+  ctx.stroke();
+  // Arrow shaft (diagonal, box → top-right).
+  ctx.beginPath();
+  ctx.moveTo(px(0.42), py(0.58));
+  ctx.lineTo(px(0.88), py(0.12));
+  ctx.stroke();
+  // Arrow head (top-right corner).
+  ctx.beginPath();
+  ctx.moveTo(px(0.62), py(0.12));
+  ctx.lineTo(px(0.88), py(0.12));
+  ctx.lineTo(px(0.88), py(0.38));
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -971,6 +1047,39 @@ function drawGuides(
     ctx.beginPath();
     ctx.moveTo(-EXTENT, guides.y);
     ctx.lineTo(EXTENT, guides.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/**
+ * Draws the **equal-spacing** gap segments as small "I-beams" (a line + perpendicular end ticks) in
+ * the selection color — each marks one gap, so two equal ones read as "same spacing". World coords;
+ * the tick length is kept ~constant on screen (÷ zoom).
+ */
+function drawSpacingGuides(ctx: CanvasLike, guides: readonly SpacingGuide[], zoom: number): void {
+  ctx.save();
+  ctx.strokeStyle = paint(SELECTION_COLOR);
+  ctx.lineWidth = 1 / zoom;
+  const cap = 3 / zoom;
+  for (const g of guides) {
+    ctx.beginPath();
+    ctx.moveTo(g.x1, g.y1);
+    ctx.lineTo(g.x2, g.y2);
+    ctx.stroke();
+    // Perpendicular end ticks (horizontal gap → vertical ticks, and vice-versa).
+    ctx.beginPath();
+    if (g.y1 === g.y2) {
+      ctx.moveTo(g.x1, g.y1 - cap);
+      ctx.lineTo(g.x1, g.y1 + cap);
+      ctx.moveTo(g.x2, g.y2 - cap);
+      ctx.lineTo(g.x2, g.y2 + cap);
+    } else {
+      ctx.moveTo(g.x1 - cap, g.y1);
+      ctx.lineTo(g.x1 + cap, g.y1);
+      ctx.moveTo(g.x2 - cap, g.y2);
+      ctx.lineTo(g.x2 + cap, g.y2);
+    }
     ctx.stroke();
   }
   ctx.restore();

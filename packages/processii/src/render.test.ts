@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createEngine } from './engine.js';
-import { renderToCanvas, resolveColor, SELECTION_COLOR, type CanvasLike } from './render.js';
+import {
+  linkBadgeRect,
+  renderToCanvas,
+  resolveColor,
+  SELECTION_COLOR,
+  type CanvasLike,
+} from './render.js';
+import { parseElement } from './scene.js';
 
 /** Test double: records the styles seen and the primitives called. */
 function fakeCtx(): CanvasLike & {
@@ -591,5 +598,74 @@ describe('renderToCanvas — step: description, tags, shadow', () => {
     const el = engine.board.getElement('s');
     expect(el && el.kind === 'step' ? el.fill : '').toBe('surface');
     expect(el && el.kind === 'step' ? el.stroke : '').toBe('transparent');
+  });
+});
+
+describe('link badge (#266)', () => {
+  it('draws the (vector) badge in accent for an element with a url, none without', () => {
+    // The "external-link" icon is stroked in accent (3 sub-paths); a bare item strokes its
+    // outline in `text`, never accent → the accent-stroke count isolates the badge.
+    const accentStrokes = (url?: string): number => {
+      const engine = createEngine({ clientId: 1 });
+      engine.addElement(
+        { kind: 'rectangle', id: 'r', x: 0, y: 0, width: 100, height: 60, ...(url ? { url } : {}) },
+        { select: false },
+      );
+      const ctx = fakeCtx();
+      renderToCanvas(ctx, engine.toRenderModel());
+      return ctx.strokes.filter((s) => s === resolveColor('accent')).length;
+    };
+    expect(accentStrokes('https://x.test')).toBeGreaterThanOrEqual(3);
+    expect(accentStrokes()).toBe(0);
+    // No emoji is drawn (icon, not glyph).
+    const ctx = fakeCtx();
+    const engine = createEngine({ clientId: 1 });
+    engine.addElement(
+      { kind: 'rectangle', id: 'r', x: 0, y: 0, width: 100, height: 60, url: 'https://x.test' },
+      { select: false },
+    );
+    renderToCanvas(ctx, engine.toRenderModel());
+    expect(ctx.texts.some((t) => t.text === '🔗')).toBe(false);
+  });
+
+  it('linkBadgeRect sits inside the top-right corner, and is null for connectors / no url', () => {
+    const linked = parseElement({
+      kind: 'rectangle',
+      id: 'r',
+      x: 10,
+      y: 100,
+      width: 80,
+      height: 40,
+      url: 'https://x.test',
+    });
+    const rect = linkBadgeRect(linked);
+    expect(rect).not.toBeNull();
+    // Inside the top-right corner (inset from the top and right edges).
+    expect(rect!.y).toBeGreaterThanOrEqual(linked.y);
+    expect(rect!.y + rect!.height).toBeLessThanOrEqual(linked.y + linked.height);
+    expect(rect!.x).toBeGreaterThanOrEqual(linked.x);
+    expect(rect!.x + rect!.width).toBeLessThanOrEqual(linked.x + linked.width);
+    // No url → no badge.
+    expect(
+      linkBadgeRect(parseElement({ kind: 'rectangle', id: 'r2', x: 0, y: 0, width: 1, height: 1 })),
+    ).toBeNull();
+    // A connector never gets a badge, even with a url.
+    expect(
+      linkBadgeRect(
+        parseElement({
+          kind: 'arrow',
+          id: 'a',
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          url: 'https://x.test',
+          points: [
+            [0, 0],
+            [10, 10],
+          ],
+        }),
+      ),
+    ).toBeNull();
   });
 });

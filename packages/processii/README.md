@@ -67,9 +67,11 @@ element's text (no per-character rich text). A shape's label is typed **on doubl
 (`surface`), **no outline**, detached by a **drop shadow** — disableable per item (`shadow: false`).
 
 Common fields: `id`, `angle`, `stroke`, `fill`, `strokeWidth`, `opacity`, `z` (render order),
-`markers[]`. The `stroke`/`fill` colors are either a **semantic token** of the theming contract
-(`text`, `accent`, …) or a free (imported) value. Every input goes through zod (`parseElement`,
-`parseScene`) → typed `WhiteboardParseError` when invalid.
+`url?` (an optional **hyperlink** — surfaced as a link badge on box-like items, see
+[interaction](#viewport--hit-testing-interaction)), `markers[]`. The `stroke`/`fill` colors are
+either a **semantic token** of the theming contract (`text`, `accent`, …) or a free (imported)
+value. Every input goes through zod (`parseElement`, `parseScene`) → typed `WhiteboardParseError`
+when invalid.
 
 Every element also carries an optional **`data`** bag (`Record<string, unknown>`) — an **extension
 point** the engine passes through untouched and never interprets, for a host to attach app-specific
@@ -184,8 +186,33 @@ precedence), not only the small square drawn at its midpoint — so resizing fro
 intuitive while the connection dot on top of the midpoint keeps creating linked items.
 `snap.ts` snaps a moving box (`snapMove`) **or the dragged edges of a resized box** (`snapResize`)
 onto the **edges and centers** of the other elements under a threshold, returning the correction
-(`(dx, dy)` for a move, the adjusted box for a resize) + the guide lines. `renderToCanvas` draws
-the handles (**single** selection) and the guides. Pure, tested modules.
+(`(dx, dy)` for a move, the adjusted box for a resize) + the guide lines. It also provides
+**equal-spacing distribution** (`snapSpacing`): the "two elements have a gap, drop a third and it
+takes the same gap" smart guide — a moving box snaps to land **equidistant between** its two
+row/column neighbours or to **reproduce** an adjacent pair's gap and extend the row, returning the
+per-axis correction + the **gap segments** to draw (rendered as small "I-beam" measures). It
+distributes on one axis while `snapMove` aligns the other; pass **element** bounds only (a swimlane
+band would distort every gap). `renderToCanvas` draws the handles (**single** selection), the
+alignment guides and the spacing guides. Pure, tested modules.
+
+**Keyboard & pointer nudge/clone.** `BoardCanvas` adds two low-friction editing gestures on top of
+the drag: the **arrow keys nudge** the selection by 1 world px — **10** with `Shift` — as a single
+undo step with the connectors re-routed (`Ctrl`/`⌘`+arrow is left to the browser); and an
+**`Alt`-drag clones** — grabbing an element with `Alt` held duplicates the selection **in place** on
+the first move (`engine.duplicateInPlace()`), then drags the **copies** while the originals stay put
+(the freed originals become snap targets). Both are covered by `board-canvas.test.tsx`.
+
+**Hyperlink badge.** Any box-like element (`step`, `rectangle`, `ellipse`, `text` — see
+`PANEL_ELEMENT_KINDS`) may carry a `url` (see [Scene model](#scene-model)). `renderToCanvas` draws a
+small monochrome **"external-link" icon** (a vector stroked in the accent color, **not** an emoji)
+inside its **top-right corner** (`linkBadgeRect`, a separate unrotated pass so the drawn badge and
+the click target coincide; no chrome — icon only), and clicking it **opens the link** — via the
+host's `onOpenLink?: (href) => void`, or a new tab by default. The badge hit-test
+runs **after** the resize handles (a selected item still resizes from its corner) and before the
+element hit-test. The href is scheme-guarded by `safeLinkHref` (bare host → `https://`,
+`http`/`https`/`mailto`/relative pass through, any other scheme refused), so a link can never smuggle
+`javascript:`/`data:` execution. The **editing** UI is the host's (a `SidePanel` field and/or a
+toolbar action); `PANEL_ELEMENT_KINDS`/`isPanelElementKind` let a host gate it.
 
 ## Process board (process model)
 
@@ -332,6 +359,9 @@ choice. `BoardCanvas` takes an optional **`clipboard: WhiteboardClipboard`** (`w
 default: copy-paste works within the same page (across boards navigated in one SPA) but not across
 tabs. A host backs it with the **system clipboard** (`navigator.clipboard` + a payload marker) to
 get cross-tab / cross-app paste. `createMemoryClipboard()` is exported for hosts and tests.
+`engine.duplicateInPlace()` is the clipboard-free building block of the **`Alt`-drag clone** (copies
+the selection exactly onto itself, then the canvas drags the copies — see
+[interaction](#viewport--hit-testing-interaction)).
 
 **Z-order** (stacking): `engine.bringToFront(ids?)` / `engine.sendToBack(ids?)` (default: the
 selection) move elements to the front/back — above/below every other element — keeping the moved
