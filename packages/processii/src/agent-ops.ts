@@ -22,6 +22,7 @@ import {
   BOARD_TYPES,
   SUBPROCESS_KINDS,
   SWIMLANE_COLORS,
+  safeLinkHref,
   type BoardType,
   type Scene,
 } from './scene.js';
@@ -441,8 +442,9 @@ const updateElement = defineOp({
   name: 'update_element',
   description:
     'Update fields of an existing element: its text label, an **absolute** position (x, y), size ' +
-    '(width, height) or colors (fill, stroke). Only the provided fields change. Use `move_element` ' +
-    'for a relative move. Returns the element id.',
+    '(width, height), colors (fill, stroke) or its hyperlink (url — an http(s)/mailto URL, a ' +
+    'host-relative path "/…" or a bare domain; an empty string removes the link). Only the ' +
+    'provided fields change. Use `move_element` for a relative move. Returns the element id.',
   inputSchema: z
     .object({
       id: z.string().min(1).describe('Id of the element to update.'),
@@ -453,6 +455,13 @@ const updateElement = defineOp({
       height: z.number().finite().positive().optional(),
       fill: z.string().min(1).optional().describe('Fill color (ui-kit token or CSS value).'),
       stroke: z.string().min(1).optional().describe('Stroke color (ui-kit token or CSS value).'),
+      url: z
+        .string()
+        .optional()
+        .describe(
+          'Hyperlink of the element (any kind): an http(s)/mailto URL, a host-relative path ' +
+            '("/…") or a bare domain (opened as https). An empty string removes the link.',
+        ),
     })
     .describe('The id plus at least one field to change.'),
   execute: (engine, input): { id: string } => {
@@ -465,6 +474,27 @@ const updateElement = defineOp({
     if (input.height !== undefined) patch.height = input.height;
     if (input.fill !== undefined) patch.fill = input.fill;
     if (input.stroke !== undefined) patch.stroke = input.stroke;
+    if (input.url !== undefined) {
+      // Same normalization as the human link editors (trim; empty = clear). The stored value is
+      // the trimmed input, but a value `safeLinkHref` would refuse to open (`javascript:`, `data:`,
+      // protocol-relative `//host`…) is rejected here: unlike a human typing, the model's input
+      // may come from untrusted content, and a link nobody can open is a silent failure anyway.
+      const url = input.url.trim();
+      if (url !== '' && safeLinkHref(url) === null) {
+        throw new AgentOpError(
+          `Unsupported link "${url}": use an http(s) or mailto URL, a host-relative path ("/…") ` +
+            'or a bare domain.',
+        );
+      }
+      patch.url = url === '' ? null : url;
+    }
+    // An id-only call (or one whose only fields were unknown and stripped by the schema) would
+    // "succeed" without changing anything — surface it instead (same contract as update_swimlane).
+    if (Object.keys(patch).length === 0) {
+      throw new AgentOpError(
+        `Nothing to update on element "${input.id}": provide at least one field.`,
+      );
+    }
     if (!engine.updateElement(input.id, patch)) {
       throw new AgentOpError(`Element "${input.id}" not found.`);
     }
