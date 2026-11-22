@@ -630,13 +630,17 @@ getAgentOp('read_board')?.run(engine, {}); // → lossless Scene snapshot
 | `delete_swimlane`   | `{ id }`                                                                          | `{ id }` (steps are NOT deleted with the lane)                                                                                                   |
 | `add_group`         | `{ name?, stepIds?: string[], id? }`                                              | `{ id }` (named step group)                                                                                                                      |
 | `move_element`      | `{ id, dx, dy }`                                                                  | `{ id }` (relative move)                                                                                                                         |
-| `update_element`    | `{ id, text?, x?, y?, width?, height?, fill?, stroke? }`                          | `{ id }` (patch of the provided fields)                                                                                                          |
+| `update_element`    | `{ id, text?, x?, y?, width?, height?, fill?, stroke?, url? }`                    | `{ id }` (patch of the provided fields; `url: ''` clears the link)                                                                               |
 | `delete_element`    | `{ id }`                                                                          | `{ id }`                                                                                                                                         |
 
 `add_*` accept an optional explicit `id` (else one is generated) for deterministic host/test output.
 `move_element`/`update_element`/`delete_element` — and their swimlane counterparts — throw
 **`AgentOpError`** when the id is unknown, so a host can surface a "not found" tool error
-(`update_swimlane` also rejects an id-only call: an empty patch would otherwise be a silent no-op).
+(`update_swimlane` and `update_element` also reject an id-only call: an empty patch would
+otherwise be a silent no-op). `update_element`'s `url` sets the hyperlink of a step, shape or text (a connector refuses it: the
+editor never shows a link there),
+trimmed like the human link editors; an empty string clears it, and a value `safeLinkHref` would
+refuse to open (`javascript:`, `data:`, protocol-relative `//host`…) throws `AgentOpError`.
 `link_subprocess`/`unlink_subprocess` only accept a **step** target (on any other kind the zod merge
 would silently strip the field — they throw instead), and unlinking an unlinked step is an error,
 not a silent no-op.

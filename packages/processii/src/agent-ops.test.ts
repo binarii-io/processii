@@ -388,6 +388,74 @@ describe('agent-ops', () => {
     expect(() => op('update_element').run(engine, { id, width: -10 })).toThrow(AgentOpError);
   });
 
+  it('update_element sets, normalizes and clears the hyperlink of any element kind', () => {
+    const engine = createEngine({ clientId: 1 });
+    const step = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    const box = op('add_element').run(engine, { kind: 'rectangle', x: 0, y: 300 }) as {
+      id: string;
+    };
+    op('update_element').run(engine, { id: step.id, url: '  https://example.com/a  ' });
+    op('update_element').run(engine, { id: box.id, url: '/docs/doc-1' });
+    const scene = op('read_board').run(engine, {}) as Scene;
+    // Stored trimmed (like the human editors) and visible through read_board.
+    expect(scene.elements.find((e) => e.id === step.id)).toMatchObject({
+      url: 'https://example.com/a',
+    });
+    expect(scene.elements.find((e) => e.id === box.id)).toMatchObject({ url: '/docs/doc-1' });
+    // A bare domain is accepted (the host opens it as https), stored as typed.
+    op('update_element').run(engine, { id: box.id, url: 'example.org' });
+    expect(engine.board.getElement(box.id)).toMatchObject({ url: 'example.org' });
+    // An empty (or blank) string clears the link — the field is gone, not an empty string.
+    op('update_element').run(engine, { id: step.id, url: '   ' });
+    expect(engine.board.getElement(step.id)).not.toHaveProperty('url');
+    // Clearing the link leaves the other fields untouched.
+    expect(engine.board.getElement(step.id)).toMatchObject({ name: 'A', x: 0, y: 0 });
+  });
+
+  it('update_element refuses a link with an unsafe scheme, leaving the board untouched', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    op('update_element').run(engine, { id, url: 'https://ok.example' });
+    for (const bad of [
+      'javascript:alert(1)',
+      'data:text/html,x',
+      '//evil.example',
+      'file:///etc',
+    ]) {
+      expect(() => op('update_element').run(engine, { id, url: bad })).toThrow(AgentOpError);
+    }
+    expect(engine.board.getElement(id)).toMatchObject({ url: 'https://ok.example' });
+  });
+
+  it('update_element throws AgentOpError when nothing would change (id only or unknown fields)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    expect(() => op('update_element').run(engine, { id })).toThrow(AgentOpError);
+    // An unknown field is stripped by the schema: before, this "succeeded" while writing nothing.
+    expect(() => op('update_element').run(engine, { id, link: 'https://x.example' })).toThrow(
+      AgentOpError,
+    );
+  });
+
+  it('update_element says "not found" for an unknown id, even with nothing to change', () => {
+    const engine = createEngine({ clientId: 1 });
+    expect(() => op('update_element').run(engine, { id: 'ghost' })).toThrow(/not found/);
+    expect(() =>
+      op('update_element').run(engine, { id: 'ghost', url: 'https://x.example' }),
+    ).toThrow(/not found/);
+  });
+
+  it('update_element refuses a link on a connector (it would be stored but never shown)', () => {
+    const engine = createEngine({ clientId: 1 });
+    const a = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
+    const b = op('add_step').run(engine, { name: 'B', x: 400, y: 0 }) as { id: string };
+    const { id } = op('connect').run(engine, { from: a.id, to: b.id }) as { id: string };
+    expect(() => op('update_element').run(engine, { id, url: 'https://x.example' })).toThrow(
+      /only steps, shapes and text carry a link/,
+    );
+    expect(engine.board.getElement(id)).not.toHaveProperty('url');
+  });
+
   it('delete_element removes an element, gone from read_board', () => {
     const engine = createEngine({ clientId: 1 });
     const { id } = op('add_step').run(engine, { name: 'A', x: 0, y: 0 }) as { id: string };
