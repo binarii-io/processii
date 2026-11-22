@@ -22,6 +22,7 @@ import {
   BOARD_TYPES,
   SUBPROCESS_KINDS,
   SWIMLANE_COLORS,
+  isPanelElementKind,
   safeLinkHref,
   type BoardType,
   type Scene,
@@ -459,12 +460,17 @@ const updateElement = defineOp({
         .string()
         .optional()
         .describe(
-          'Hyperlink of the element (any kind): an http(s)/mailto URL, a host-relative path ' +
+          'Hyperlink of the element (step, rectangle, ellipse or text — not a connector): an http(s)/mailto URL, a host-relative path ' +
             '("/…") or a bare domain (opened as https). An empty string removes the link.',
         ),
     })
     .describe('The id plus at least one field to change.'),
   execute: (engine, input): { id: string } => {
+    // Existence first: a made-up id must say "not found", not "nothing to update".
+    const element = engine.board.getElement(input.id);
+    if (!element) {
+      throw new AgentOpError(`Element "${input.id}" not found.`);
+    }
     // Build the patch with only the provided fields (respect exactOptionalPropertyTypes).
     const patch: Parameters<WhiteboardEngine['updateElement']>[1] = {};
     if (input.text !== undefined) patch.text = input.text;
@@ -475,6 +481,13 @@ const updateElement = defineOp({
     if (input.fill !== undefined) patch.fill = input.fill;
     if (input.stroke !== undefined) patch.stroke = input.stroke;
     if (input.url !== undefined) {
+      // Only kinds the editor shows a link for (steps, shapes, text): on a connector the link would
+      // be stored but neither shown nor openable — the silent success this op refuses.
+      if (!isPanelElementKind(element.kind)) {
+        throw new AgentOpError(
+          `Element "${input.id}" is a ${element.kind}: only steps, shapes and text carry a link.`,
+        );
+      }
       // Same normalization as the human link editors (trim; empty = clear). The stored value is
       // the trimmed input, but a value `safeLinkHref` would refuse to open (`javascript:`, `data:`,
       // protocol-relative `//host`…) is rejected here: unlike a human typing, the model's input

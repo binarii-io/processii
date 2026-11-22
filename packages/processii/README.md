@@ -637,7 +637,8 @@ getAgentOp('read_board')?.run(engine, {}); // → lossless Scene snapshot
 `move_element`/`update_element`/`delete_element` — and their swimlane counterparts — throw
 **`AgentOpError`** when the id is unknown, so a host can surface a "not found" tool error
 (`update_swimlane` and `update_element` also reject an id-only call: an empty patch would
-otherwise be a silent no-op). `update_element`'s `url` sets the element's hyperlink (any kind),
+otherwise be a silent no-op). `update_element`'s `url` sets the hyperlink of a step, shape or text (a connector refuses it: the
+editor never shows a link there),
 trimmed like the human link editors; an empty string clears it, and a value `safeLinkHref` would
 refuse to open (`javascript:`, `data:`, protocol-relative `//host`…) throws `AgentOpError`.
 `link_subprocess`/`unlink_subprocess` only accept a **step** target (on any other kind the zod merge
